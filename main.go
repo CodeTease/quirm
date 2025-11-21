@@ -23,6 +23,7 @@ import (
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/joho/godotenv"
+	"golang.org/x/sync/singleflight"
 )
 
 // Config holds application configuration
@@ -36,13 +37,17 @@ type Config struct {
 	S3UseCustomDomain bool
 	Port              string
 	CacheDir          string
+	CacheTTL          time.Duration // Time-to-live for cached files
+	CleanupInterval   time.Duration // Interval for the background cleaner
 	Debug             bool
 }
 
 var (
 	s3Client *s3.Client
 	cfg      Config
-	Version  = "0.1.0" // Back to the roots!
+	// requestGroup handles duplicate requests (SingleFlight pattern)
+	requestGroup singleflight.Group
+	Version      = "0.1.0"
 )
 
 func main() {
@@ -57,7 +62,9 @@ func main() {
 		S3ForcePathStyle:  getEnvBool("S3_FORCE_PATH_STYLE", false),
 		S3UseCustomDomain: getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
 		Port:              getEnv("PORT", "8080"),
-		CacheDir:          getEnv("CACHE_DIR", "./cache"),
+		CacheDir:          getEnv("CACHE_DIR", "./cache_data"),
+		CacheTTL:          time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
+		CleanupInterval:   time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
 		Debug:             getEnvBool("DEBUG", false),
 	}
 
@@ -69,6 +76,9 @@ func main() {
 	if _, err := os.Stat(cfg.CacheDir); os.IsNotExist(err) {
 		os.MkdirAll(cfg.CacheDir, 0755)
 	}
+
+	// Start Background Cache Cleaner (Garbage Collector)
+	go startCacheCleaner()
 
 	// Logging Setup
 	clientLogMode := aws.LogRequest
@@ -94,7 +104,6 @@ func main() {
 		o.UsePathStyle = cfg.S3ForcePathStyle
 
 		if cfg.S3UseCustomDomain {
-			// 1. Fix Hostname: Prevent SDK from creating bucket.domain.com
 			o.EndpointResolver = s3.EndpointResolverFunc(func(region string, options s3.EndpointResolverOptions) (aws.Endpoint, error) {
 				return aws.Endpoint{
 					URL:               cfg.S3Endpoint,
@@ -104,36 +113,23 @@ func main() {
 				}, nil
 			})
 
-			// 2. Fix Path: Inject Middleware to strip bucket name from path
-			// Using APIOptions is safer and avoids type casting errors in LoadDefaultConfig
 			o.APIOptions = []func(*middleware.Stack) error{
 				func(stack *middleware.Stack) error {
 					return stack.Finalize.Add(middleware.FinalizeMiddlewareFunc("StripBucketFromPath",
 						func(ctx context.Context, in middleware.FinalizeInput, next middleware.FinalizeHandler) (
 							middleware.FinalizeOutput, middleware.Metadata, error,
 						) {
-							// Cast the opaque Request to a concrete HTTP Request
 							req, ok := in.Request.(*smithyhttp.Request)
 							if !ok {
-								// Not an HTTP request? Should not happen in S3, but safety first.
 								return next.HandleFinalize(ctx, in)
 							}
-
-							// Logic: If path starts with /bucketName, strip it.
-							// R2 Custom Domain points directly to bucket, so we want /file.png, NOT /bucket/file.png
 							prefix := "/" + cfg.S3Bucket
 							if strings.HasPrefix(req.URL.Path, prefix) {
-								originalPath := req.URL.Path
 								req.URL.Path = strings.TrimPrefix(req.URL.Path, prefix)
-
-								if cfg.Debug {
-									log.Printf("[Middleware] Path Rewrite: %s -> %s", originalPath, req.URL.Path)
-								}
 							}
-
 							return next.HandleFinalize(ctx, in)
 						}),
-						middleware.Before, // Execute this BEFORE signing/sending
+						middleware.Before,
 					)
 				},
 			}
@@ -142,18 +138,23 @@ func main() {
 
 	http.HandleFunc("/", handleRequest)
 
-	fmt.Printf("Quirm v%s running on port %s\n", Version, cfg.Port)
+	fmt.Printf("Quirm v%s (Somewhat Stable) running on port %s\n", Version, cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, nil))
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
-	objectKey := strings.TrimPrefix(r.URL.Path, "/")
-	if objectKey == "" {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Quirm Status: OK"))
+	// 1. SECURITY: Path Traversal Protection & Windows Path Fix
+	// filepath.Clean converts / to \ on Windows. We force it back to / for S3 keys.
+	cleanedPath := filepath.ToSlash(filepath.Clean(r.URL.Path))
+	objectKey := strings.TrimPrefix(cleanedPath, "/")
+
+	// Prevent access to system files or hidden files
+	if strings.Contains(objectKey, "..") || objectKey == ".env" || objectKey == "" {
+		http.Error(w, "Invalid Path", http.StatusBadRequest)
 		return
 	}
 
+	// Determine Encoding
 	acceptEncoding := r.Header.Get("Accept-Encoding")
 	encodingType := "identity"
 	if strings.Contains(acceptEncoding, "br") {
@@ -162,65 +163,119 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		encodingType = "gzip"
 	}
 
+	// Generate Cache Key
 	cacheFileName := generateCacheKey(objectKey, encodingType)
 	cacheFilePath := filepath.Join(cfg.CacheDir, cacheFileName)
 
-	if fileExists(cacheFilePath) {
-		if cfg.Debug {
-			log.Printf("[HIT] Serving from cache: %s", objectKey)
+	// --- SINGLEFLIGHT PATTERN ---
+	flightKey := objectKey + "|" + encodingType
+
+	_, err, _ := requestGroup.Do(flightKey, func() (interface{}, error) {
+		// Double-checked locking
+		if fileExists(cacheFilePath) {
+			return nil, nil
 		}
-		serveFile(w, cacheFilePath, encodingType, objectKey)
-		return
-	}
 
-	if cfg.Debug {
-		log.Printf("[MISS] Fetching: %s", objectKey)
-	}
+		if cfg.Debug {
+			log.Printf("[MISS] Fetching from Origin: %s (%s)", objectKey, encodingType)
+		}
 
-	resp, err := s3Client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(cfg.S3Bucket),
-		Key:    aws.String(objectKey),
+		return fetchAndSave(objectKey, cacheFilePath, encodingType)
 	})
 
 	if err != nil {
-		if cfg.Debug {
-			log.Printf("!!! FETCH ERROR !!! Key: %s | Error: %v", objectKey, err)
+		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
 		}
-		http.Error(w, "Not Found on Remote Storage", http.StatusNotFound)
-		return
-	}
-	defer resp.Body.Close()
-
-	outFile, err := os.Create(cacheFilePath)
-	if err != nil {
+		log.Printf("Error processing request: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
+	if cfg.Debug {
+		log.Printf("[HIT] Serving: %s", objectKey)
+	}
+	serveFile(w, cacheFilePath, encodingType, objectKey)
+}
+
+// fetchAndSave downloads from S3 and saves to disk using Atomic Write
+func fetchAndSave(objectKey, destPath, encodingType string) (interface{}, error) {
+	resp, err := s3Client.GetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: aws.String(cfg.S3Bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// ATOMIC WRITE START
+	tempFile, err := os.CreateTemp(cfg.CacheDir, "quirm_tmp_*")
+	if err != nil {
+		return nil, err
+	}
+	tempName := tempFile.Name()
+
+	// Defer cleanup in case of panic or error before rename
+	defer func() {
+		// It's safe to close a file multiple times (though returns error, we ignore here)
+		tempFile.Close()
+		// If rename failed, this removes the temp file. If renamed, this does nothing.
+		os.Remove(tempName)
+	}()
+
+	// Compression logic
 	switch encodingType {
 	case "br":
-		brWriter := brotli.NewWriterLevel(outFile, brotli.BestCompression)
-		io.Copy(brWriter, resp.Body)
+		brWriter := brotli.NewWriterLevel(tempFile, brotli.BestCompression)
+		_, err = io.Copy(brWriter, resp.Body)
 		brWriter.Close()
 	case "gzip":
-		gzWriter := gzip.NewWriter(outFile)
-		io.Copy(gzWriter, resp.Body)
+		gzWriter := gzip.NewWriter(tempFile)
+		_, err = io.Copy(gzWriter, resp.Body)
 		gzWriter.Close()
 	default:
-		io.Copy(outFile, resp.Body)
+		_, err = io.Copy(tempFile, resp.Body)
 	}
-	outFile.Close()
 
-	serveFile(w, cacheFilePath, encodingType, objectKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// CRITICAL FIX FOR WINDOWS:
+	// We MUST close the file handle explicitly BEFORE renaming.
+	// Windows locks the file if it's still open.
+	tempFile.Close()
+
+	// On Windows, Rename fails if destPath exists. We should try to remove dest first just in case.
+	// (Although SingleFlight prevents race, a stale file might exist)
+	if fileExists(destPath) {
+		os.Remove(destPath)
+	}
+
+	// Atomic Rename
+	if err := os.Rename(tempName, destPath); err != nil {
+		return nil, err
+	}
+
+	// Update ModTime for the cleaner
+	now := time.Now()
+	os.Chtimes(destPath, now, now)
+
+	return nil, nil
 }
 
 func serveFile(w http.ResponseWriter, path string, encoding string, originalName string) {
 	file, err := os.Open(path)
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		http.Error(w, "Cache miss mid-flight", http.StatusInternalServerError)
 		return
 	}
 	defer file.Close()
+
+	now := time.Now()
+	os.Chtimes(path, now, now)
 
 	switch encoding {
 	case "br":
@@ -228,9 +283,71 @@ func serveFile(w http.ResponseWriter, path string, encoding string, originalName
 	case "gzip":
 		w.Header().Set("Content-Encoding", "gzip")
 	}
+
+	// Content-Type detection
+	ext := filepath.Ext(originalName)
+	mimeType := "application/octet-stream"
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		mimeType = "image/jpeg"
+	case ".png":
+		mimeType = "image/png"
+	case ".gif":
+		mimeType = "image/gif"
+	case ".webp":
+		mimeType = "image/webp"
+	case ".css":
+		mimeType = "text/css"
+	case ".js":
+		mimeType = "application/javascript"
+	case ".svg":
+		mimeType = "image/svg+xml"
+	}
+	w.Header().Set("Content-Type", mimeType)
+
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	http.ServeContent(w, &http.Request{}, originalName, time.Now(), file)
 }
+
+func startCacheCleaner() {
+	ticker := time.NewTicker(cfg.CleanupInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if cfg.Debug {
+			log.Println("[CLEANUP] Starting cache cleanup...")
+		}
+
+		files, err := os.ReadDir(cfg.CacheDir)
+		if err != nil {
+			log.Printf("[CLEANUP] Error reading dir: %v", err)
+			continue
+		}
+
+		deletedCount := 0
+		for _, file := range files {
+			info, err := file.Info()
+			if err != nil {
+				continue
+			}
+
+			if time.Since(info.ModTime()) > cfg.CacheTTL {
+				path := filepath.Join(cfg.CacheDir, file.Name())
+				// On Windows, this might fail if file is currently being served (Open).
+				// We just ignore error and try next time.
+				if err := os.Remove(path); err == nil {
+					deletedCount++
+				}
+			}
+		}
+
+		if cfg.Debug && deletedCount > 0 {
+			log.Printf("[CLEANUP] Removed %d stale files.", deletedCount)
+		}
+	}
+}
+
+// --- Helpers ---
 
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
@@ -242,6 +359,16 @@ func getEnv(key, fallback string) string {
 func getEnvBool(key string, fallback bool) bool {
 	if value, ok := os.LookupEnv(key); ok {
 		val, err := strconv.ParseBool(value)
+		if err == nil {
+			return val
+		}
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	if value, ok := os.LookupEnv(key); ok {
+		val, err := strconv.Atoi(value)
 		if err == nil {
 			return val
 		}
