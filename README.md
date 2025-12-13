@@ -20,6 +20,18 @@ Supported backends: AWS S3, Cloudflare R2, MinIO, DigitalOcean Spaces, Wasabi, e
 
 ## Installation
 
+### Docker (Recommended)
+
+You can run Quirm quickly using the official Docker image:
+
+```bash
+docker run -d -p 8080:8080 -v $(pwd)/cache_data:/app/cache_data ghcr.io/codetease/quirm:latest
+```
+
+See [DOCKER.md](DOCKER.md) for full configuration details.
+
+### Manual Installation
+
 1. Clone the repository.
 2. Copy `.env.example` to `.env` and configure your storage credentials.
 3. Build the binary:

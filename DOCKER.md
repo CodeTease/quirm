@@ -1,20 +1,16 @@
 # Docker Instructions for Quirm
 
-This guide explains how to build and run Quirm using Docker.
+This guide explains how to use Quirm with Docker, either by pulling the pre-built image or building it yourself.
 
-## Prerequisites
+## Quick Start (Pre-built Image)
 
-- Docker installed on your machine.
-
-## Build the Image
+Quirm is available on the GitHub Container Registry. You can pull the latest stable version:
 
 ```bash
-docker build -t quirm .
+docker pull ghcr.io/codetease/quirm:latest
 ```
 
-## Run the Container
-
-You can run Quirm using the following command. Note that you must provide the necessary environment variables.
+### Run with Docker
 
 ```bash
 docker run -d \
@@ -25,26 +21,26 @@ docker run -d \
   -e S3_ACCESS_KEY="my-access-key" \
   -e S3_SECRET_KEY="my-secret-key" \
   -e S3_REGION="auto" \
-  -e SECRET_KEY="my-secure-key" \
   -v $(pwd)/cache_data:/app/cache_data \
-  quirm
+  ghcr.io/codetease/quirm:latest
 ```
 
-### Watermark Support
+## Build from Source
 
-If you want to use a watermark, mount the watermark file into the container and set the `WATERMARK_PATH` environment variable.
+If you prefer to build the image locally:
+
+```bash
+docker build -t quirm .
+```
+
+Then run it using the local tag:
 
 ```bash
 docker run -d \
   --name quirm \
   -p 8080:8080 \
   -e S3_ENDPOINT="https://s3.example.com" \
-  -e S3_BUCKET="my-bucket" \
-  -e S3_ACCESS_KEY="my-access-key" \
-  -e S3_SECRET_KEY="my-secret-key" \
-  -e WATERMARK_PATH="/app/watermark.png" \
-  -v $(pwd)/assets/watermark.png:/app/watermark.png \
-  -v $(pwd)/cache_data:/app/cache_data \
+  ... \
   quirm
 ```
 
@@ -63,6 +59,24 @@ docker run -d \
 | `WATERMARK_OPACITY` | Opacity of the watermark (0.0 - 1.0). | `0.5` |
 | `SECRET_KEY` | Secret key for HMAC signature validation. | |
 
-## Volumes
+## Advanced Usage
+
+### Watermark Support
+
+To use a watermark, mount the watermark file into the container and set `WATERMARK_PATH`.
+
+```bash
+docker run -d \
+  --name quirm \
+  -p 8080:8080 \
+  -e S3_ENDPOINT="..." \
+  ... \
+  -e WATERMARK_PATH="/app/watermark.png" \
+  -v $(pwd)/assets/watermark.png:/app/watermark.png \
+  -v $(pwd)/cache_data:/app/cache_data \
+  ghcr.io/codetease/quirm:latest
+```
+
+### Volumes
 
 *   `/app/cache_data`: Map this volume to persist the image cache between restarts.
