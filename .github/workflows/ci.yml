@@ -9,6 +9,7 @@ on:
 jobs:
 
   build:
+  - name: Build and Test
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -23,3 +24,24 @@ jobs:
 
     - name: Test
       run: go test -v ./...
+
+  docker:
+  - name: Docker Build and Test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker Image
+      run: docker build -t quirm-app .
+
+    - name: Run Container
+      run: docker run -d -p 8080:8080 --name quirm_test quirm-app
+
+    - name: Test Application
+      run: |
+        sleep 5
+        curl -f http://localhost:8080/ || exit 1
+
+    - name: Stop Container
+      if: always()
+      run: docker stop quirm_test && docker rm quirm_test

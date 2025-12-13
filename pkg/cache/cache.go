@@ -1,0 +1,70 @@
+package cache
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"log"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+)
+
+func GenerateKeyOriginal(key, encoding string) string {
+	h := sha256.New()
+	h.Write([]byte(key + encoding))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func GenerateKeyProcessed(key string, params url.Values, format string) string {
+	// Sort params for determinism
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		if k == "s" {
+			continue
+		} // Ignore signature in cache key
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := sha256.New()
+	h.Write([]byte(key))
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte(params.Get(k)))
+	}
+	h.Write([]byte(format))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func StartCleaner(dir string, ttl, interval time.Duration, debug bool) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if debug {
+			log.Println("[CLEANUP] Starting cache cleanup...")
+		}
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			log.Printf("[CLEANUP] Error reading dir: %v", err)
+			continue
+		}
+		deletedCount := 0
+		for _, file := range files {
+			info, err := file.Info()
+			if err != nil {
+				continue
+			}
+			if time.Since(info.ModTime()) > ttl {
+				path := filepath.Join(dir, file.Name())
+				if err := os.Remove(path); err == nil {
+					deletedCount++
+				}
+			}
+		}
+		if debug && deletedCount > 0 {
+			log.Printf("[CLEANUP] Removed %d stale files.", deletedCount)
+		}
+	}
+}
