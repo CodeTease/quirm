@@ -9,7 +9,7 @@ on:
 jobs:
 
   build:
-  - name: Build and Test
+    name: Build and Test
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
       run: go test -v ./...
 
   docker:
-  - name: Docker Build and Test
+    name: Docker Build and Test
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
