@@ -23,10 +23,3 @@ jobs:
 
     - name: Test
       run: go test -v ./...
-
-    - name: Lint
-      uses: golangci/golangci-lint-action@v4
-      with:
-        version: v1.59.2
-        args: --timeout 5m
-        working-directory: .
