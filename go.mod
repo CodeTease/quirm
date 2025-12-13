@@ -9,6 +9,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.16.14
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.48.0
 	github.com/aws/smithy-go v1.19.0
+	github.com/chai2010/webp v1.4.0
+	github.com/disintegration/imaging v1.6.2
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/sync v0.18.0
 )
@@ -27,4 +29,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.18.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.21.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.26.7 // indirect
+	golang.org/x/image v0.0.0-20211028202545-6944b10bf410 // indirect
 )

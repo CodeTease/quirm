@@ -36,3 +36,8 @@ cache_data/
 
 # Application
 quirm
+
+# Vegh files (CodeTease's tool)
+*.vegh
+.veghcache
+.veghhooks.json
