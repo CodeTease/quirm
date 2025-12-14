@@ -11,6 +11,7 @@ import (
 
 	"github.com/chai2010/webp"
 	"github.com/disintegration/imaging"
+	"github.com/gen2brain/avif"
 )
 
 type ImageOptions struct {
@@ -87,6 +88,8 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 		encodeErr = imaging.Encode(buf, img, imaging.GIF)
 	case "webp":
 		encodeErr = webp.Encode(buf, img, &webp.Options{Quality: float32(quality)})
+	case "avif":
+		encodeErr = avif.Encode(buf, img, avif.Options{Quality: quality})
 	default: // jpeg
 		encodeErr = jpeg.Encode(buf, img, &jpeg.Options{Quality: quality})
 	}

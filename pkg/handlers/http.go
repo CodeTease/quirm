@@ -65,7 +65,9 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// Auto-Format Logic: Check Accept Header
 	if isImage && imgOpts.Format == "" {
 		acceptHeader := r.Header.Get("Accept")
-		if strings.Contains(acceptHeader, "image/webp") {
+		if strings.Contains(acceptHeader, "image/avif") {
+			imgOpts.Format = "avif"
+		} else if strings.Contains(acceptHeader, "image/webp") {
 			imgOpts.Format = "webp"
 		}
 	}
@@ -119,7 +121,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) fetchAndSave(objectKey, destPath, encodingType string) (interface{}, error) {
-	reader, err := h.S3.GetObject(context.TODO(), objectKey)
+	reader, _, err := h.S3.GetObject(context.TODO(), objectKey)
 	if err != nil {
 		return nil, err
 	}
@@ -129,11 +131,15 @@ func (h *Handler) fetchAndSave(objectKey, destPath, encodingType string) (interf
 }
 
 func (h *Handler) processAndSave(objectKey, destPath string, opts processor.ImageOptions) (interface{}, error) {
-	reader, err := h.S3.GetObject(context.TODO(), objectKey)
+	reader, size, err := h.S3.GetObject(context.TODO(), objectKey)
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
+
+	if h.Config.MaxImageSizeMB > 0 && size > h.Config.MaxImageSizeMB*1024*1024 {
+		return nil, &FileSizeError{MaxSizeMB: h.Config.MaxImageSizeMB}
+	}
 
 	// Get watermark if configured
 	wmImg, wmOpacity, err := h.WM.Get()
@@ -242,6 +248,8 @@ func serveFile(w http.ResponseWriter, path string, encoding string, objectKey st
 		mimeType = "image/gif"
 	case ".webp":
 		mimeType = "image/webp"
+	case ".avif":
+		mimeType = "image/avif"
 	case ".css":
 		mimeType = "text/css"
 	case ".js":

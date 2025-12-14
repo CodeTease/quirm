@@ -26,6 +26,7 @@ type Config struct {
 	SecretKey        string
 	WatermarkPath    string
 	WatermarkOpacity float64
+	MaxImageSizeMB   int64
 }
 
 // LoadConfig loads configuration from environment variables
@@ -48,6 +49,7 @@ func LoadConfig() Config {
 		SecretKey:         os.Getenv("SECRET_KEY"),
 		WatermarkPath:     os.Getenv("WATERMARK_PATH"),
 		WatermarkOpacity:  getEnvFloat("WATERMARK_OPACITY", 0.5),
+		MaxImageSizeMB:    int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
 	}
 }
 

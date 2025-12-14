@@ -79,13 +79,17 @@ func NewS3Client(cfg appConfig.Config) (*S3Client, error) {
 	}, nil
 }
 
-func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, error) {
+func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return resp.Body, nil
+	var contentLength int64
+	if resp.ContentLength != nil {
+		contentLength = *resp.ContentLength
+	}
+	return resp.Body, contentLength, nil
 }

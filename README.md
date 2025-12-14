@@ -57,7 +57,7 @@ Quirm supports image manipulation via query parameters.
 * `h`: Height (px)
 * `fit`: Resize mode (`cover`, `contain`, `fill`). Default is basic resize.
 * `q`: Quality (1-100). Default: 80.
-* `format`: Output format (`jpeg`, `png`, `gif`, `webp`).
+* `format`: Output format (`jpeg`, `png`, `gif`, `webp`, `avif`).
 * `s`: URL Signature (Required if `SECRET_KEY` is set).
 
 **Examples:**
@@ -69,8 +69,8 @@ Quirm supports image manipulation via query parameters.
 * Convert to WebP with 90 quality:
   `/images/banner.jpg?format=webp&q=90`
 
-### Auto-WebP Conversion
-If the client sends `Accept: image/webp` header (most modern browsers), and no specific format is requested in the URL, Quirm automatically converts the image to WebP for better compression.
+### Auto-Format (AVIF/WebP)
+If the client sends `Accept: image/avif` or `Accept: image/webp` header (most modern browsers), and no specific format is requested in the URL, Quirm automatically converts the image to the best available format (AVIF > WebP > Original) for optimal compression.
 
 ### Security: URL Signatures
 To prevent resource exhaustion attacks (DDoS) via infinite resize combinations, you should set a `SECRET_KEY` in your `.env`.
@@ -103,6 +103,7 @@ Configuration is handled via environment variables in the `.env` file:
 * `SECRET_KEY`: Secret string for validating URL signatures (Recommended for production).
 * `WATERMARK_PATH`: Local path to a watermark image file (e.g., `./assets/logo_wm.png`).
 * `WATERMARK_OPACITY`: Opacity of the watermark (0.0 - 1.0). Default: 0.5.
+* `MAX_IMAGE_SIZE_MB`: Max input image size in MB (Default: 20).
 
 **Cache:**
 * `CACHE_DIR`: Directory for cache files.

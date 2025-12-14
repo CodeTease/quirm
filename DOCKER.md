@@ -57,6 +57,7 @@ docker run -d \
 | `CACHE_TTL_HOURS` | Cache Time-To-Live in hours. | `24` |
 | `WATERMARK_PATH` | Path to the watermark image inside the container. | |
 | `WATERMARK_OPACITY` | Opacity of the watermark (0.0 - 1.0). | `0.5` |
+| `MAX_IMAGE_SIZE_MB` | Max input image size in MB. | `20` |
 | `SECRET_KEY` | Secret key for HMAC signature validation. | |
 
 ## Advanced Usage
