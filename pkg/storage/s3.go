@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -14,6 +15,7 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	appConfig "github.com/CodeTease/quirm/pkg/config"
+	"github.com/CodeTease/quirm/pkg/metrics"
 )
 
 type S3Client struct {
@@ -80,6 +82,7 @@ func NewS3Client(cfg appConfig.Config) (*S3Client, error) {
 }
 
 func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	start := time.Now()
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -87,6 +90,18 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 	if err != nil {
 		return nil, 0, err
 	}
+
+	// Only record metric if configured (implicit check: if metrics initialized)
+	// We can check appConfig, but here we don't have it easily accessible unless stored.
+	// However, prometheus metrics are global and safe to call even if not scraped,
+	// unless we want to avoid the overhead.
+	// Given the instructions, we should just record it.
+	// But wait, the plan said "Optional".
+	// The metrics variables are global. If we record them, they just update in memory.
+	// If /metrics is not exposed, no one sees them. That's fine.
+	// The overhead is minimal.
+	metrics.S3FetchDuration.Observe(time.Since(start).Seconds())
+
 	var contentLength int64
 	if resp.ContentLength != nil {
 		contentLength = *resp.ContentLength

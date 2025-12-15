@@ -8,10 +8,13 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chai2010/webp"
 	"github.com/disintegration/imaging"
 	"github.com/gen2brain/avif"
+
+	"github.com/CodeTease/quirm/pkg/metrics"
 )
 
 type ImageOptions struct {
@@ -25,9 +28,15 @@ type ImageOptions struct {
 // Process decodes, transforms, watermarks, and encodes the image.
 // It returns a bytes.Buffer containing the processed image data.
 func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float64, originalKey string) (*bytes.Buffer, error) {
+	start := time.Now()
+	defer func() {
+		metrics.ImageProcessDuration.Observe(time.Since(start).Seconds())
+	}()
+
 	// 1. Decode
 	img, err := imaging.Decode(r)
 	if err != nil {
+		metrics.ImageProcessErrorsTotal.Inc()
 		return nil, fmt.Errorf("decode error: %w", err)
 	}
 
@@ -95,6 +104,7 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 	}
 
 	if encodeErr != nil {
+		metrics.ImageProcessErrorsTotal.Inc()
 		return nil, encodeErr
 	}
 

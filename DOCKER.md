@@ -59,6 +59,7 @@ docker run -d \
 | `WATERMARK_OPACITY` | Opacity of the watermark (0.0 - 1.0). | `0.5` |
 | `MAX_IMAGE_SIZE_MB` | Max input image size in MB. | `20` |
 | `SECRET_KEY` | Secret key for HMAC signature validation. | |
+| `ENABLE_METRICS` | Enable Prometheus metrics (`true` or `false`). | `false` |
 
 ## Advanced Usage
 

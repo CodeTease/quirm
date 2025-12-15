@@ -9,14 +9,17 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/CodeTease/quirm/pkg/cache"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/CodeTease/quirm/pkg/config"
 	"github.com/CodeTease/quirm/pkg/handlers"
+	"github.com/CodeTease/quirm/pkg/metrics"
 	"github.com/CodeTease/quirm/pkg/storage"
 	"github.com/CodeTease/quirm/pkg/watermark"
 )
 
 var (
-	Version = "0.2.0"
+	Version = "0.3.0"
 )
 
 func main() {
@@ -48,6 +51,12 @@ func main() {
 		WM:       wmManager,
 		Group:    requestGroup,
 		CacheDir: cfg.CacheDir,
+	}
+
+	if cfg.EnableMetrics {
+		metrics.Init()
+		http.Handle("/metrics", promhttp.Handler())
+		fmt.Printf("Metrics enabled at /metrics\n")
 	}
 
 	http.HandleFunc("/", h.HandleRequest)

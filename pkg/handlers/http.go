@@ -19,10 +19,21 @@ import (
 
 	"github.com/CodeTease/quirm/pkg/cache"
 	"github.com/CodeTease/quirm/pkg/config"
+	"github.com/CodeTease/quirm/pkg/metrics"
 	"github.com/CodeTease/quirm/pkg/processor"
 	"github.com/CodeTease/quirm/pkg/storage"
 	"github.com/CodeTease/quirm/pkg/watermark"
 )
+
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rec *statusRecorder) WriteHeader(code int) {
+	rec.statusCode = code
+	rec.ResponseWriter.WriteHeader(code)
+}
 
 type Handler struct {
 	Config   config.Config
@@ -33,6 +44,34 @@ type Handler struct {
 }
 
 func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
+	// Wrap writer if metrics enabled
+	var rec *statusRecorder
+	if h.Config.EnableMetrics {
+		rec = &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		w = rec
+	}
+
+	start := time.Now()
+	defer func() {
+		if h.Config.EnableMetrics {
+			duration := time.Since(start).Seconds()
+			status := strconv.Itoa(rec.statusCode)
+			// Use path template if possible?
+			// Since we don't have a router with path templates here (just /),
+			// we should probably just use "image" or "other" to avoid cardinality explosion,
+			// or just the root path if it's the only one.
+			// The user said: "path nên là template để tránh cardinality explosion".
+			// But here everything is processed by this handler.
+			// Let's check the URL. If it's an image, we can use "/{image}".
+			// Since this is a proxy, the path IS the image path.
+			// Cardinality explosion is real if we use the raw path.
+			// Let's use a static label for now or a simple categorization.
+			pathLabel := "/{image}" // Generic placeholder as requested
+			metrics.HTTPRequestsTotal.WithLabelValues(r.Method, status, pathLabel).Inc()
+			metrics.HTTPRequestDuration.WithLabelValues(r.Method, status, pathLabel).Observe(duration)
+		}
+	}()
+
 	cleanedPath := filepath.ToSlash(filepath.Clean(r.URL.Path))
 	objectKey := strings.TrimPrefix(cleanedPath, "/")
 
@@ -94,8 +133,11 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	_, err, _ := h.Group.Do(cacheKey, func() (interface{}, error) {
 		if storage.FileExists(cacheFilePath) {
+			metrics.CacheOpsTotal.WithLabelValues("hit").Inc()
 			return nil, nil
 		}
+		metrics.CacheOpsTotal.WithLabelValues("miss").Inc()
+
 		if h.Config.Debug {
 			log.Printf("[MISS] Processing: %s (Key: %s)", objectKey, cacheKey)
 		}

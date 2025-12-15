@@ -104,14 +104,37 @@ Configuration is handled via environment variables in the `.env` file:
 * `WATERMARK_PATH`: Local path to a watermark image file (e.g., `./assets/logo_wm.png`).
 * `WATERMARK_OPACITY`: Opacity of the watermark (0.0 - 1.0). Default: 0.5.
 * `MAX_IMAGE_SIZE_MB`: Max input image size in MB (Default: 20).
+* `ENABLE_METRICS`: Set to `true` to enable Prometheus metrics at `/metrics`. Default: `false`.
 
 **Cache:**
 * `CACHE_DIR`: Directory for cache files.
 * `CACHE_TTL_HOURS`: Cache expiration time in hours.
 * `CLEANUP_INTERVAL_MINS`: How often to run garbage collection.
 
+## Observability
+
+Quirm supports Prometheus metrics for monitoring performance and health.
+
+**Enable Metrics:**
+Set `ENABLE_METRICS=true` in your environment.
+
+**Endpoint:**
+`GET /metrics`
+
+**Available Metrics:**
+* **HTTP:**
+    * `quirm_http_requests_total`: Total requests by method, status, and path.
+    * `quirm_http_request_duration_seconds`: Response latency histogram.
+* **Cache:**
+    * `quirm_cache_ops_total`: Cache Hits vs Misses (`type=hit|miss`). Use this to calculate Cache Hit Ratio.
+* **Processing:**
+    * `quirm_image_process_duration_seconds`: Time taken to resize/transform images.
+    * `quirm_image_process_errors_total`: Count of processing failures.
+* **Storage:**
+    * `quirm_s3_fetch_duration_seconds`: Latency when fetching files from S3.
+
 ## License
 
 This project is under the **MIT License**.
 
-> **ALPHA STAGE**
+> **BETA STAGE**
