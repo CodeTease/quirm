@@ -8,7 +8,7 @@ A lightweight, self-hosted asset delivery worker for S3-compatible storage servi
 
 Quirm acts as a performance layer between your S3 storage and the end-user. It fetches assets, applies compression (Brotli/Gzip) based on client capabilities, and serves them from a local disk cache to minimize egress costs and latency.
 
-It now supports **On-the-fly Image Processing**, allowing you to resize, crop, format convert, and watermark images via URL parameters.
+It now supports **On-the-fly Image Processing**, allowing you to resize, crop, format convert, watermark, and generate blurhashes via URL parameters. It also includes advanced features like **Smart Crop**, **Face Detection**, and **Video Thumbnail Generation**.
 
 Supported backends: AWS S3, Cloudflare R2, MinIO, DigitalOcean Spaces, Wasabi, etc.
 
@@ -17,6 +17,7 @@ Supported backends: AWS S3, Cloudflare R2, MinIO, DigitalOcean Spaces, Wasabi, e
 * Go 1.24+
 * S3-compatible storage credentials
 * (Optional) Local watermark file
+* (Optional) `ffmpeg` installed (for Video Thumbnail support)
 
 ## Installation
 
@@ -56,18 +57,27 @@ Quirm supports image manipulation via query parameters.
 * `w`: Width (px)
 * `h`: Height (px)
 * `fit`: Resize mode (`cover`, `contain`, `fill`). Default is basic resize.
+* `focus`: Focus point for `fit=cover`. Options: `smart` (entropy), `face` (face detection).
 * `q`: Quality (1-100). Default: 80.
 * `format`: Output format (`jpeg`, `png`, `gif`, `webp`, `avif`).
+* `text`: Text to overlay on the image.
+* `color`: Text color (name or hex). Default: `red`.
+* `ts`: Text size.
+* `blurhash`: Set to `true` or `1` to return the Blurhash string of the image (content-type `text/plain`).
 * `s`: URL Signature (Required if `SECRET_KEY` is set).
 
 **Examples:**
 
-* Resize to 800x600:
-  `/images/banner.jpg?w=800&h=600`
-* Create a thumbnail (Cover fit):
-  `/images/banner.jpg?w=200&h=200&fit=cover`
-* Convert to WebP with 90 quality:
-  `/images/banner.jpg?format=webp&q=90`
+* **Smart Crop (Auto-Focus):**
+  `/images/banner.jpg?w=400&h=400&fit=cover&focus=smart`
+* **Face Detection Crop:**
+  `/images/avatar.jpg?w=200&h=200&fit=cover&focus=face`
+* **Text Overlay:**
+  `/images/sale.jpg?text=SALE+50%&color=white&ts=48`
+* **Blurhash:**
+  `/images/photo.jpg?blurhash=true`
+* **Video Thumbnail:**
+  `/videos/intro.mp4?w=300` (Requires `ENABLE_VIDEO_THUMBNAIL=true`)
 
 ### Auto-Format (AVIF/WebP)
 If the client sends `Accept: image/avif` or `Accept: image/webp` header (most modern browsers), and no specific format is requested in the URL, Quirm automatically converts the image to the best available format (AVIF > WebP > Original) for optimal compression.
@@ -105,6 +115,12 @@ Configuration is handled via environment variables in the `.env` file:
 * `WATERMARK_OPACITY`: Opacity of the watermark (0.0 - 1.0). Default: 0.5.
 * `MAX_IMAGE_SIZE_MB`: Max input image size in MB (Default: 20).
 * `ENABLE_METRICS`: Set to `true` to enable Prometheus metrics at `/metrics`. Default: `false`.
+* `FACE_FINDER_PATH`: Path to the pigo cascade file for face detection. Default: `./facefinder`.
+
+**Security & Advanced:**
+* `ALLOWED_DOMAINS`: Comma-separated list of allowed domains for Referer/Origin checks.
+* `RATE_LIMIT`: Requests per second limit per IP. Default: `10`.
+* `ENABLE_VIDEO_THUMBNAIL`: Enable video thumbnail generation (Requires `ffmpeg`). Default: `false`.
 
 **Cache:**
 * `CACHE_DIR`: Directory for cache files.

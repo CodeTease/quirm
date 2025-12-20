@@ -60,8 +60,21 @@ docker run -d \
 | `MAX_IMAGE_SIZE_MB` | Max input image size in MB. | `20` |
 | `SECRET_KEY` | Secret key for HMAC signature validation. | |
 | `ENABLE_METRICS` | Enable Prometheus metrics (`true` or `false`). | `false` |
+| `ALLOWED_DOMAINS` | Whitelist domains (comma-separated). | |
+| `RATE_LIMIT` | Requests per second per IP. | `10` |
+| `ENABLE_VIDEO_THUMBNAIL` | Enable video processing (requires ffmpeg). | `false` |
+| `FACE_FINDER_PATH` | Path to face detection cascade file. | `./facefinder` |
 
 ## Advanced Usage
+
+### Video Thumbnail Support
+
+To support video thumbnails, the container must have `ffmpeg` installed. The official image might need to be extended or you can install it at runtime if supported (not recommended).
+
+To enable:
+```bash
+docker run -d ... -e ENABLE_VIDEO_THUMBNAIL=true ...
+```
 
 ### Watermark Support
 

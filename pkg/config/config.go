@@ -28,6 +28,12 @@ type Config struct {
 	WatermarkOpacity float64
 	MaxImageSizeMB   int64
 	EnableMetrics    bool
+	// Security
+	AllowedDomains []string
+	RateLimit      int // Requests per second
+	// Features
+	EnableVideoThumbnail bool
+	FaceFinderPath       string
 }
 
 // LoadConfig loads configuration from environment variables
@@ -35,23 +41,27 @@ func LoadConfig() Config {
 	godotenv.Load()
 
 	return Config{
-		S3Endpoint:        os.Getenv("S3_ENDPOINT"),
-		S3Region:          getEnv("S3_REGION", "auto"),
-		S3Bucket:          os.Getenv("S3_BUCKET"),
-		S3AccessKey:       os.Getenv("S3_ACCESS_KEY"),
-		S3SecretKey:       os.Getenv("S3_SECRET_KEY"),
-		S3ForcePathStyle:  getEnvBool("S3_FORCE_PATH_STYLE", false),
-		S3UseCustomDomain: getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
-		Port:              getEnv("PORT", "8080"),
-		CacheDir:          getEnv("CACHE_DIR", "./cache_data"),
-		CacheTTL:          time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
-		CleanupInterval:   time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
-		Debug:             getEnvBool("DEBUG", false),
-		SecretKey:         os.Getenv("SECRET_KEY"),
-		WatermarkPath:     os.Getenv("WATERMARK_PATH"),
-		WatermarkOpacity:  getEnvFloat("WATERMARK_OPACITY", 0.5),
-		MaxImageSizeMB:    int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
-		EnableMetrics:     getEnvBool("ENABLE_METRICS", false),
+		S3Endpoint:           os.Getenv("S3_ENDPOINT"),
+		S3Region:             getEnv("S3_REGION", "auto"),
+		S3Bucket:             os.Getenv("S3_BUCKET"),
+		S3AccessKey:          os.Getenv("S3_ACCESS_KEY"),
+		S3SecretKey:          os.Getenv("S3_SECRET_KEY"),
+		S3ForcePathStyle:     getEnvBool("S3_FORCE_PATH_STYLE", false),
+		S3UseCustomDomain:    getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
+		Port:                 getEnv("PORT", "8080"),
+		CacheDir:             getEnv("CACHE_DIR", "./cache_data"),
+		CacheTTL:             time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
+		CleanupInterval:      time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
+		Debug:                getEnvBool("DEBUG", false),
+		SecretKey:            os.Getenv("SECRET_KEY"),
+		WatermarkPath:        os.Getenv("WATERMARK_PATH"),
+		WatermarkOpacity:     getEnvFloat("WATERMARK_OPACITY", 0.5),
+		MaxImageSizeMB:       int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
+		EnableMetrics:        getEnvBool("ENABLE_METRICS", false),
+		AllowedDomains:       getEnvSlice("ALLOWED_DOMAINS"),
+		RateLimit:            getEnvInt("RATE_LIMIT", 10),
+		EnableVideoThumbnail: getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
+		FaceFinderPath:       getEnv("FACE_FINDER_PATH", "facefinder"),
 	}
 }
 
@@ -61,6 +71,29 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getEnvSlice(key string) []string {
+	if value, ok := os.LookupEnv(key); ok {
+		return splitString(value)
+	}
+	return nil
+}
+
+func splitString(s string) []string {
+	// Simple split by comma
+	var result []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ',' {
+			result = append(result, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		result = append(result, s[start:])
+	}
+	return result
 }
 func getEnvBool(key string, fallback bool) bool {
 	if value, ok := os.LookupEnv(key); ok {
