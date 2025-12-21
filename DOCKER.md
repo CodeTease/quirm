@@ -67,14 +67,24 @@ docker run -d \
 
 ## Advanced Usage
 
-### Video Thumbnail Support
+### Video Thumbnail Support (Optional)
 
-To support video thumbnails, the container must have `ffmpeg` installed. The official image might need to be extended or you can install it at runtime if supported (not recommended).
+The standard image does not include `ffmpeg` to keep it lightweight. If you need video thumbnail generation, you must build a custom image using the provided `Dockerfile.video`:
 
-To enable:
-```bash
-docker run -d ... -e ENABLE_VIDEO_THUMBNAIL=true ...
-```
+1.  **Build the image:**
+    ```bash
+    docker build -f Dockerfile.video -t quirm:video .
+    ```
+
+2.  **Run with the new tag:**
+    ```bash
+    docker run -d \
+      --name quirm \
+      -p 8080:8080 \
+      -e ENABLE_VIDEO_THUMBNAIL=true \
+      ... (other env vars) ...
+      quirm:video
+    ```
 
 ### Watermark Support
 

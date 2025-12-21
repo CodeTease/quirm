@@ -1,0 +1,5 @@
+# Dockerfile.video
+FROM ghcr.io/codetease/quirm:latest
+USER root
+RUN apk add --no-cache ffmpeg
+USER quirm
