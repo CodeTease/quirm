@@ -28,6 +28,9 @@ type Config struct {
 	CacheTTL          time.Duration
 	CleanupInterval   time.Duration
 	Debug             bool
+	// Memory Cache
+	MemoryCacheSize       int
+	MemoryCacheLimitBytes int64
 	// New Configs
 	SecretKey        string
 	WatermarkPath    string
@@ -64,11 +67,13 @@ func LoadConfig() Config {
 		S3ForcePathStyle:     getEnvBool("S3_FORCE_PATH_STYLE", false),
 		S3UseCustomDomain:    getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
 		Port:                 getEnv("PORT", "8080"),
-		CacheDir:             getEnv("CACHE_DIR", "./cache_data"),
-		CacheTTL:             time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
-		CleanupInterval:      time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
-		Debug:                getEnvBool("DEBUG", false),
-		SecretKey:            os.Getenv("SECRET_KEY"),
+		CacheDir:              getEnv("CACHE_DIR", "./cache_data"),
+		CacheTTL:              time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
+		CleanupInterval:       time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
+		Debug:                 getEnvBool("DEBUG", false),
+		MemoryCacheSize:       getEnvInt("MEMORY_CACHE_SIZE", 100),
+		MemoryCacheLimitBytes: int64(getEnvInt("MEMORY_CACHE_LIMIT_BYTES", 0)),
+		SecretKey:             os.Getenv("SECRET_KEY"),
 		WatermarkPath:        os.Getenv("WATERMARK_PATH"),
 		WatermarkOpacity:     getEnvFloat("WATERMARK_OPACITY", 0.5),
 		MaxImageSizeMB:       int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),

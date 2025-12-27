@@ -23,7 +23,7 @@ jobs:
       run: sudo apt update && sudo apt install build-essential ninja-build -y
 
     - name: Setup environment
-      run: sudo apt install libvips libpoppler-glib-dev pkg-config -y
+      run: sudo apt install libvips-dev libpoppler-glib-dev pkg-config -y
 
     - name: Build
       run: go build -v ./...

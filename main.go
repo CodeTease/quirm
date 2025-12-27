@@ -74,10 +74,11 @@ func main() {
 
 	// Initialize caches
 	var cacheProvider cache.CacheProvider
-	memoryCache := cache.NewMemoryCache(100, cfg.CacheTTL) // 100 items limit for memory cache for now
+	memoryCache := cache.NewMemoryCache(cfg.MemoryCacheSize, cfg.MemoryCacheLimitBytes, cfg.CacheTTL)
 
 	if cfg.RedisAddr != "" {
-		redisCache := cache.NewRedisCache(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+		redisAddrs := strings.Split(cfg.RedisAddr, ",")
+		redisCache := cache.NewRedisCache(redisAddrs, cfg.RedisPassword, cfg.RedisDB)
 		cacheProvider = cache.NewTieredCache(memoryCache, redisCache)
 		slog.Info("Initialized Tiered Cache (Memory + Redis)")
 	} else {
@@ -89,7 +90,8 @@ func main() {
 	var limiter ratelimit.Limiter
 	if cfg.RateLimit > 0 {
 		if cfg.RedisAddr != "" {
-			limiter = ratelimit.NewRedisLimiter(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.RateLimit)
+			redisAddrs := strings.Split(cfg.RedisAddr, ",")
+			limiter = ratelimit.NewRedisLimiter(redisAddrs, cfg.RedisPassword, cfg.RedisDB, cfg.RateLimit)
 			slog.Info("Initialized Redis Rate Limiter")
 		} else {
 			limiter = ratelimit.NewMemoryLimiter(cfg.RateLimit, 10000, time.Hour)
