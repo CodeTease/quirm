@@ -30,6 +30,11 @@ import (
 	"github.com/CodeTease/quirm/pkg/ratelimit"
 	"github.com/CodeTease/quirm/pkg/storage"
 	"github.com/CodeTease/quirm/pkg/watermark"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type statusRecorder struct {
@@ -43,7 +48,7 @@ func (rec *statusRecorder) WriteHeader(code int) {
 }
 
 type Handler struct {
-	Config              config.Config
+	ConfigManager       *config.Manager
 	S3                  storage.StorageProvider
 	WM                  *watermark.Manager
 	Group               *singleflight.Group
@@ -55,29 +60,75 @@ type Handler struct {
 }
 
 func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
+	// Start Tracing Span
+	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	tracer := otel.Tracer("quirm/http")
+	ctx, span := tracer.Start(ctx, "HandleRequest",
+		trace.WithAttributes(
+			semconv.HTTPMethodKey.String(r.Method),
+			semconv.HTTPURLKey.String(r.URL.String()),
+			semconv.UserAgentOriginalKey.String(r.UserAgent()),
+			attribute.String("client.ip", r.RemoteAddr),
+		),
+		trace.WithSpanKind(trace.SpanKindServer),
+	)
+	defer span.End()
+
+	// Update request with context
+	r = r.WithContext(ctx)
+
+	// Get current config
+	cfg := h.ConfigManager.Get()
+
 	// Wrap writer if metrics enabled
 	var rec *statusRecorder
-	if h.Config.EnableMetrics {
+	if cfg.EnableMetrics {
 		rec = &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		w = rec
 	}
 
 	start := time.Now()
 	defer func() {
-		if h.Config.EnableMetrics {
+		if cfg.EnableMetrics {
 			duration := time.Since(start).Seconds()
 			status := strconv.Itoa(rec.statusCode)
 			pathLabel := "/{image}" // Generic placeholder as requested
 			metrics.HTTPRequestsTotal.WithLabelValues(r.Method, status, pathLabel).Inc()
 			metrics.HTTPRequestDuration.WithLabelValues(r.Method, status, pathLabel).Observe(duration)
 		}
+		if rec != nil {
+			span.SetAttributes(semconv.HTTPStatusCodeKey.Int(rec.statusCode))
+		}
 	}()
 
-	// 0. Security: Domain Whitelisting
-	if len(h.Config.AllowedDomains) > 0 {
+	// 0. Security: IP/CIDR Allowlist
+	// If the IP is in the allowed CIDR list, we bypass Domain Whitelisting
+	ipAllowed := false
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+
+	if len(cfg.AllowedCIDRNets) > 0 {
+		parsedIP := net.ParseIP(ip)
+		if parsedIP != nil {
+			for _, ipNet := range cfg.AllowedCIDRNets {
+				if ipNet.Contains(parsedIP) {
+					ipAllowed = true
+					break
+				}
+			}
+		}
+	}
+	// Fallback check for exact IPs if any (though usually we use CIDRs)
+	// If needed we can check AllowedCIDRs strings too if they weren't valid CIDRs but might be IPs
+
+	// 0.1 Security: Domain Whitelisting
+	// Only check if IP is NOT explicitly allowed (and if domains are configured)
+	if !ipAllowed && len(cfg.AllowedDomains) > 0 {
 		referer := r.Header.Get("Referer")
 		origin := r.Header.Get("Origin")
-		allowed := false
+		domainAllowed := false
 
 		check := func(val string) bool {
 			if val == "" {
@@ -88,7 +139,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 				return false
 			}
 			// Check exact/wildcard domains first
-			for _, d := range h.Config.AllowedDomains {
+			for _, d := range cfg.AllowedDomains {
 				if d == "*" {
 					return true
 				}
@@ -107,27 +158,33 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 		if referer != "" {
 			if check(referer) {
-				allowed = true
+				domainAllowed = true
 			}
 		}
 		if origin != "" {
 			if check(origin) {
-				allowed = true
+				domainAllowed = true
 			}
 		}
 
 		if referer == "" && origin == "" {
-			allowed = true
+			// If no referer/origin, we usually allow unless strict mode is on.
+			// Currently implementation allows it.
+			domainAllowed = true
 		}
 
-		if !allowed && (referer != "" || origin != "") {
+		if !domainAllowed && (referer != "" || origin != "") {
 			http.Error(w, "Forbidden Domain", http.StatusForbidden)
 			return
 		}
+	} else if !ipAllowed && len(cfg.AllowedCIDRNets) > 0 && len(cfg.AllowedDomains) == 0 {
+		// If only CIDRs are configured and IP didn't match -> Forbidden
+		http.Error(w, "Forbidden IP", http.StatusForbidden)
+		return
 	}
 
 	// 0.2 Security: GeoIP
-	if len(h.Config.AllowedCountries) > 0 {
+	if len(cfg.AllowedCountries) > 0 {
 		country := r.Header.Get("CF-IPCountry")
 		if country == "" {
 			country = r.Header.Get("X-Country-Code")
@@ -135,7 +192,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		
 		if country != "" {
 			allowed := false
-			for _, c := range h.Config.AllowedCountries {
+			for _, c := range cfg.AllowedCountries {
 				if strings.EqualFold(c, country) {
 					allowed = true
 					break
@@ -149,14 +206,9 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 0.5 Security: Rate Limiting
-	// Get IP
-	ip := r.RemoteAddr
-	// RemoteAddr contains port, strip it
-	if host, _, err := net.SplitHostPort(ip); err == nil {
-		ip = host
-	}
+	// IP is already extracted above
 
-	if h.Config.RateLimit > 0 && h.Limiter != nil {
+	if cfg.RateLimit > 0 && h.Limiter != nil {
 		if !h.Limiter.Allow(ip) {
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return
@@ -174,13 +226,13 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 
 	// 1. Security: Signature Verification
-	if h.Config.SecretKey != "" && len(queryParams) > 0 {
+	if cfg.SecretKey != "" && len(queryParams) > 0 {
 		sig := queryParams.Get("s")
 		if sig == "" {
 			http.Error(w, "Missing signature", http.StatusForbidden)
 			return
 		}
-		if !validateSignature(r.URL.Path, queryParams, h.Config.SecretKey) {
+		if !validateSignature(r.URL.Path, queryParams, cfg.SecretKey) {
 			http.Error(w, "Invalid signature", http.StatusForbidden)
 			return
 		}
@@ -193,7 +245,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Parse Image Options
-	imgOpts := parseImageOptions(queryParams, h.Config.Presets)
+	imgOpts := parseImageOptions(queryParams, cfg.Presets)
 
 	// Feature: Color Palette
 	if queryParams.Get("palette") == "true" {
@@ -206,7 +258,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	isVideo := isVideoFile(objectKey)
 
 	// Video Thumbnail Logic
-	if isVideo && h.Config.EnableVideoThumbnail {
+	if isVideo && cfg.EnableVideoThumbnail {
 		if imgOpts.Format == "" {
 			imgOpts.Format = "jpeg"
 		}
@@ -222,7 +274,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && h.Config.EnableVideoThumbnail)
+	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && cfg.EnableVideoThumbnail)
 
 	cacheKey := ""
 	encodingType := "identity"
@@ -251,7 +303,8 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Memory/Redis Cache Check
 	if h.Cache != nil {
-		if data, found := h.Cache.Get(context.TODO(), cacheKey); found {
+		if data, found := h.Cache.Get(ctx, cacheKey); found {
+			span.AddEvent("Cache Hit")
 			metrics.CacheOpsTotal.WithLabelValues("hit_cache").Inc()
 			w.Header().Set("ETag", etag)
 			w.Header().Set("Cache-Control", "public, max-age=86400")
@@ -277,15 +330,18 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// Check if we should serve stale content
 	if fileExists {
 		// If file is older than CacheTTL, we serve it but trigger update
-		if time.Since(fileInfo.ModTime()) > h.Config.CacheTTL {
+		if time.Since(fileInfo.ModTime()) > cfg.CacheTTL {
 			// Trigger background update
 			go func() {
-				// Use singleflight to avoid stampede on update
+				// Create a background context linked to the original trace?
+				// Usually background tasks are separate traces or linked.
+				// We'll just use Background for now to avoid cancellation issues.
 				_, _, _ = h.Group.Do(cacheKey, func() (interface{}, error) {
 					return h.updateCache(context.Background(), objectKey, cacheFilePath, cacheKey, imgOpts, encodingType, shouldProcess, isVideo)
 				})
 			}()
 
+			span.AddEvent("Serve Stale")
 			metrics.CacheOpsTotal.WithLabelValues("hit_stale").Inc()
 			// Serve the file
 			w.Header().Set("ETag", etag)
@@ -294,12 +350,14 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		
 		// File exists and is fresh
+		span.AddEvent("Disk Hit")
 		metrics.CacheOpsTotal.WithLabelValues("hit_disk").Inc()
 		w.Header().Set("ETag", etag)
 		serveFile(w, cacheFilePath, encodingType, objectKey, imgOpts.Format)
 		return
 	}
 
+	span.AddEvent("Cache Miss")
 	_, err, _ = h.Group.Do(cacheKey, func() (interface{}, error) {
 		// Double check inside singleflight
 		if storage.FileExists(cacheFilePath) {
@@ -310,14 +368,14 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		metrics.CacheOpsTotal.WithLabelValues("miss").Inc()
 
 		slog.Debug("Processing MISS", "objectKey", objectKey, "cacheKey", cacheKey)
-		return h.updateCache(context.Background(), objectKey, cacheFilePath, cacheKey, imgOpts, encodingType, shouldProcess, isVideo)
+		return h.updateCache(ctx, objectKey, cacheFilePath, cacheKey, imgOpts, encodingType, shouldProcess, isVideo)
 	})
 
 	if err != nil {
 		// Feature: Fallback/Default Image
-		if h.Config.DefaultImagePath != "" {
+		if cfg.DefaultImagePath != "" {
 			if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "NoSuchKey") {
-				http.ServeFile(w, r, h.Config.DefaultImagePath)
+				http.ServeFile(w, r, cfg.DefaultImagePath)
 				return
 			}
 		}
@@ -340,7 +398,7 @@ func (h *Handler) handlePalette(w http.ResponseWriter, r *http.Request, objectKe
 
 	// Check Cache
 	if h.Cache != nil {
-		if data, found := h.Cache.Get(context.TODO(), cacheKey); found {
+		if data, found := h.Cache.Get(r.Context(), cacheKey); found {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "public, max-age=86400")
 			w.Write(data)
@@ -351,7 +409,7 @@ func (h *Handler) handlePalette(w http.ResponseWriter, r *http.Request, objectKe
 	// Fetch and Process
 	// We use singleflight to avoid duplicate processing
 	res, err, _ := h.Group.Do(cacheKey, func() (interface{}, error) {
-		reader, _, err := h.S3.GetObject(context.TODO(), objectKey)
+		reader, _, err := h.S3.GetObject(r.Context(), objectKey)
 		if err != nil {
 			return nil, err
 		}
@@ -387,7 +445,7 @@ func (h *Handler) handlePalette(w http.ResponseWriter, r *http.Request, objectKe
 
 	// Save to Cache
 	if h.Cache != nil {
-		h.Cache.Set(context.TODO(), cacheKey, data, h.Config.CacheTTL)
+		h.Cache.Set(r.Context(), cacheKey, data, h.ConfigManager.Get().CacheTTL)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -396,26 +454,33 @@ func (h *Handler) handlePalette(w http.ResponseWriter, r *http.Request, objectKe
 }
 
 func (h *Handler) updateCache(ctx context.Context, objectKey, destPath, cacheKey string, opts processor.ImageOptions, encodingType string, shouldProcess, isVideo bool) ([]byte, error) {
+	ctx, span := otel.Tracer("quirm/handler").Start(ctx, "updateCache",
+		trace.WithAttributes(attribute.String("objectKey", objectKey), attribute.String("cacheKey", cacheKey)),
+	)
+	defer span.End()
+
+	cfg := h.ConfigManager.Get()
+
 	if shouldProcess {
-		if isVideo && h.Config.EnableVideoThumbnail {
-			data, err := h.processVideoAndSave(objectKey, destPath, opts)
+		if isVideo && cfg.EnableVideoThumbnail {
+			data, err := h.processVideoAndSave(ctx, objectKey, destPath, opts)
 			if err == nil && h.Cache != nil && len(data) > 0 {
-				h.Cache.Set(ctx, cacheKey, data, h.Config.CacheTTL)
+				h.Cache.Set(ctx, cacheKey, data, cfg.CacheTTL)
 			}
 			return data, err
 		}
 
-		data, err := h.processAndSave(objectKey, destPath, opts)
+		data, err := h.processAndSave(ctx, objectKey, destPath, opts)
 		if err == nil && h.Cache != nil && len(data) > 0 {
-			h.Cache.Set(ctx, cacheKey, data, h.Config.CacheTTL)
+			h.Cache.Set(ctx, cacheKey, data, cfg.CacheTTL)
 		}
 		return data, err
 	}
-	return h.fetchAndSave(objectKey, destPath, encodingType)
+	return h.fetchAndSave(ctx, objectKey, destPath, encodingType)
 }
 
-func (h *Handler) fetchAndSave(objectKey, destPath, encodingType string) ([]byte, error) {
-	reader, _, err := h.S3.GetObject(context.TODO(), objectKey)
+func (h *Handler) fetchAndSave(ctx context.Context, objectKey, destPath, encodingType string) ([]byte, error) {
+	reader, _, err := h.S3.GetObject(ctx, objectKey)
 	if err != nil {
 		return nil, err
 	}
@@ -426,15 +491,16 @@ func (h *Handler) fetchAndSave(objectKey, destPath, encodingType string) ([]byte
 	return nil, storage.AtomicWrite(destPath, reader, encodingType, h.CacheDir)
 }
 
-func (h *Handler) processAndSave(objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
-	reader, size, err := h.S3.GetObject(context.TODO(), objectKey)
+func (h *Handler) processAndSave(ctx context.Context, objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
+	reader, size, err := h.S3.GetObject(ctx, objectKey)
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
 
-	if h.Config.MaxImageSizeMB > 0 && size > h.Config.MaxImageSizeMB*1024*1024 {
-		return nil, &FileSizeError{MaxSizeMB: h.Config.MaxImageSizeMB}
+	cfg := h.ConfigManager.Get()
+	if cfg.MaxImageSizeMB > 0 && size > cfg.MaxImageSizeMB*1024*1024 {
+		return nil, &FileSizeError{MaxSizeMB: cfg.MaxImageSizeMB}
 	}
 
 	// Get watermark if configured
@@ -469,11 +535,12 @@ func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey 
 	
 	// Implementation: Purge specific variant based on params
 	// Need to parse options to generate key properly
-	imgOpts := parseImageOptions(params, h.Config.Presets)
+	cfg := h.ConfigManager.Get()
+	imgOpts := parseImageOptions(params, cfg.Presets)
 	isImage := isImageFile(objectKey)
 	isVideo := isVideoFile(objectKey)
 	
-	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && h.Config.EnableVideoThumbnail)
+	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && cfg.EnableVideoThumbnail)
 	
 	var cacheKey string
 	if shouldProcess {
@@ -485,7 +552,7 @@ func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey 
 
 	// Delete from Cache Provider (Memory + Redis)
 	if h.Cache != nil {
-		if err := h.Cache.Delete(context.TODO(), cacheKey); err != nil {
+		if err := h.Cache.Delete(r.Context(), cacheKey); err != nil {
 			slog.Warn("Failed to delete from cache provider", "key", cacheKey, "error", err)
 		}
 	}
@@ -500,9 +567,9 @@ func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey 
 	w.Write([]byte("Purged"))
 }
 
-func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
+func (h *Handler) processVideoAndSave(ctx context.Context, objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
 	// 1. Try to get Presigned URL
-	videoURL, err := h.S3.GetPresignedURL(context.TODO(), objectKey, 15*time.Minute)
+	videoURL, err := h.S3.GetPresignedURL(ctx, objectKey, 15*time.Minute)
 	
 	// If getting presigned URL fails, or we decide to fallback (logic simplified here)
 	// We might fallback to download. But for now, if it's S3Client, it should support it.
@@ -532,7 +599,7 @@ func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor
 		defer cleanup()
 
 		// Download video
-		reader, _, err := h.S3.GetObject(context.TODO(), objectKey)
+		reader, _, err := h.S3.GetObject(ctx, objectKey)
 		if err != nil {
 			return nil, err
 		}

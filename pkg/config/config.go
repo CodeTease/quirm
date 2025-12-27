@@ -2,12 +2,49 @@ package config
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
 )
+
+// Manager holds the current configuration and manages reloads
+type Manager struct {
+	config Config
+	mu     sync.RWMutex
+}
+
+// NewManager creates a new configuration manager
+func NewManager() *Manager {
+	return &Manager{
+		config: LoadConfig(),
+	}
+}
+
+// Get returns a copy of the current configuration
+func (m *Manager) Get() Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config
+}
+
+// Reload reloads the configuration from environment variables
+func (m *Manager) Reload() error {
+	// Overload will overwrite existing env vars with values from .env
+	if err := godotenv.Overload(); err != nil {
+		// It's okay if .env doesn't exist, we just reload from OS env
+	}
+
+	newConfig := LoadConfig()
+	
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config = newConfig
+	return nil
+}
 
 // Config holds application configuration
 type Config struct {
@@ -39,6 +76,8 @@ type Config struct {
 	EnableMetrics    bool
 	// Security
 	AllowedDomains   []string
+	AllowedCIDRs     []string     // Added for IP Allowlist
+	AllowedCIDRNets  []*net.IPNet // Added for IP Allowlist optimization
 	AllowedCountries []string
 	RateLimit        int // Requests per second
 	// Features
@@ -53,6 +92,15 @@ type Config struct {
 // LoadConfig loads configuration from environment variables
 func LoadConfig() Config {
 	godotenv.Load()
+
+	allowedCIDRs := getEnvSlice("ALLOWED_CIDRS")
+	var allowedCIDRNets []*net.IPNet
+	for _, cidr := range allowedCIDRs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			allowedCIDRNets = append(allowedCIDRNets, ipNet)
+		}
+	}
 
 	return Config{
 		RedisAddr:            os.Getenv("REDIS_ADDR"),
@@ -79,6 +127,8 @@ func LoadConfig() Config {
 		MaxImageSizeMB:       int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
 		EnableMetrics:        getEnvBool("ENABLE_METRICS", false),
 		AllowedDomains:       getEnvSlice("ALLOWED_DOMAINS"),
+		AllowedCIDRs:         allowedCIDRs,
+		AllowedCIDRNets:      allowedCIDRNets,
 		AllowedCountries:     getEnvSlice("ALLOWED_COUNTRIES"),
 		RateLimit:            getEnvInt("RATE_LIMIT", 10),
 		EnableVideoThumbnail: getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),

@@ -1,13 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
-
+	"syscall"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -22,6 +24,7 @@ import (
 	"github.com/CodeTease/quirm/pkg/processor"
 	"github.com/CodeTease/quirm/pkg/ratelimit"
 	"github.com/CodeTease/quirm/pkg/storage"
+	"github.com/CodeTease/quirm/pkg/telemetry"
 	"github.com/CodeTease/quirm/pkg/watermark"
 	"github.com/davidbyttow/govips/v2/vips"
 )
@@ -35,8 +38,36 @@ func main() {
 	vips.Startup(nil)
 	defer vips.Shutdown()
 
-	cfg := config.LoadConfig()
+	cfgManager := config.NewManager()
+	cfg := cfgManager.Get()
 	logger.Init(cfg.Debug)
+
+	// Initialize Tracing
+	shutdownTracer, err := telemetry.InitTracer(context.Background(), "quirm")
+	if err != nil {
+		slog.Warn("Failed to initialize tracer", "error", err)
+	} else {
+		defer func() {
+			if err := shutdownTracer(context.Background()); err != nil {
+				slog.Error("Failed to shutdown tracer", "error", err)
+			}
+		}()
+		slog.Info("Tracing initialized")
+	}
+
+	// Listen for SIGHUP to reload config
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGHUP)
+		for range c {
+			slog.Info("Received SIGHUP, reloading config...")
+			if err := cfgManager.Reload(); err != nil {
+				slog.Error("Failed to reload config", "error", err)
+			} else {
+				slog.Info("Config reloaded successfully")
+			}
+		}
+	}()
 
 	if cfg.S3Bucket == "" || cfg.S3AccessKey == "" || cfg.S3SecretKey == "" {
 		slog.Error("Fatal: Missing required S3 configuration.")
@@ -113,7 +144,7 @@ func main() {
 	}
 
 	h := &handlers.Handler{
-		Config:              cfg,
+		ConfigManager:       cfgManager,
 		S3:                  s3Client,
 		WM:                  wmManager,
 		Group:               requestGroup,
