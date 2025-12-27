@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -66,16 +67,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		if h.Config.EnableMetrics {
 			duration := time.Since(start).Seconds()
 			status := strconv.Itoa(rec.statusCode)
-			// Use path template if possible?
-			// Since we don't have a router with path templates here (just /),
-			// we should probably just use "image" or "other" to avoid cardinality explosion,
-			// or just the root path if it's the only one.
-			// The user said: "path nên là template để tránh cardinality explosion".
-			// But here everything is processed by this handler.
-			// Let's check the URL. If it's an image, we can use "/{image}".
-			// Since this is a proxy, the path IS the image path.
-			// Cardinality explosion is real if we use the raw path.
-			// Let's use a static label for now or a simple categorization.
 			pathLabel := "/{image}" // Generic placeholder as requested
 			metrics.HTTPRequestsTotal.WithLabelValues(r.Method, status, pathLabel).Inc()
 			metrics.HTTPRequestDuration.WithLabelValues(r.Method, status, pathLabel).Observe(duration)
@@ -155,11 +146,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// If header missing, we default allow or block? usually allow if not behind proxy, or assume strictly blocked?
-		// User said "chỉ cho phép IP Việt Nam chẳng hạn", implies restrictive.
-		// But without proxy headers we can't know. Let's assume we block if header IS present and doesn't match, 
-		// but if missing, we can't enforce (unless we mandate proxy usage).
-		// For safety, let's only block if we KNOW the country and it's wrong.
 	}
 
 	// 0.5 Security: Rate Limiting
@@ -201,9 +187,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 0.6 Feature: Purge Cache
-	// We require signature verification (handled above) or a specific admin header if signatures aren't used.
-	// For simplicity in this context, we rely on the signature verification above if enabled.
-	// If SecretKey is not set, purge is open (like the rest of the app).
 	if r.Method == http.MethodDelete {
 		h.handlePurge(w, r, objectKey, queryParams)
 		return
@@ -212,30 +195,21 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// 2. Parse Image Options
 	imgOpts := parseImageOptions(queryParams, h.Config.Presets)
 
+	// Feature: Color Palette
+	if queryParams.Get("palette") == "true" {
+		h.handlePalette(w, r, objectKey, queryParams)
+		return
+	}
+
 	// Determine Mode
 	isImage := isImageFile(objectKey)
 	isVideo := isVideoFile(objectKey)
 
 	// Video Thumbnail Logic
 	if isVideo && h.Config.EnableVideoThumbnail {
-		// We treat it similar to image processing but with different processor.
-		// We use "video_thumb" as encodingType logic?
-		// Or we process it.
-		// We need to fetch the video first.
-
-		// If width/height/format provided, we assume thumbnail generation is requested.
-		// If not, maybe pass through video?
-		// "Nếu link S3 là file video (.mp4), Quirm có thể dùng ffmpeg ... để lấy frame đầu tiên làm ảnh thumbnail."
-		// Implies we treat it as an image request derived from video.
-
-		// Let's force it to be processed if it's a video and we have config enabled.
-		// We use "jpeg" as default format for thumbnail.
 		if imgOpts.Format == "" {
 			imgOpts.Format = "jpeg"
 		}
-
-		// We treat this as a "process" operation.
-		// We need to modify processAndSave to handle video.
 	}
 
 	// Auto-Format Logic: Check Accept Header
@@ -247,11 +221,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			imgOpts.Format = "webp"
 		}
 	}
-
-	// 2.5 Check ETag / If-None-Match
-	// For processed images, the key changes if params change.
-	// We can use the cacheKey as ETag.
-	// However, we compute cacheKey later. Let's compute it now.
 
 	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && h.Config.EnableVideoThumbnail)
 
@@ -286,16 +255,11 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			metrics.CacheOpsTotal.WithLabelValues("hit_cache").Inc()
 			w.Header().Set("ETag", etag)
 			w.Header().Set("Cache-Control", "public, max-age=86400")
-			// Determine content type
-			// Ideally we store metadata in cache too, but for now guess from format/ext
-
+			
 			// If blurhash, text/plain
 			if imgOpts.Blurhash {
 				w.Header().Set("Content-Type", "text/plain")
 			} else {
-				// We need to know the Content-Type.
-				// For now, let's reuse serveFile logic or duplicate it.
-				// Writing directly:
 				setContentType(w, objectKey, imgOpts.Format)
 			}
 
@@ -305,22 +269,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cacheFilePath := filepath.Join(h.CacheDir, cacheKey)
-
-	// Stale-While-Revalidate Logic
-	// If file exists but is old (handled by cleaner currently), we serve it.
-	// But cleaner deletes it.
-	// If we want SWR, cleaner shouldn't delete, OR we check modtime here.
-	// The current cleaner deletes files.
-	// We can try to read the file. If it exists, serve it.
-	// The cleaner might have deleted it.
-	// If it exists, we assume it's valid for now unless we implement explicit expiry check here.
-	// Given the instructions: "Hết hạn -> Trả về ảnh cũ ngay lập tức -> Ngầm fetch ảnh mới".
-	// This implies we need to know if it is expired.
-	// The cleaner handles expiry. If we want SWR, we should disable the cleaner for these files or change how cleaner works.
-	// But modifying cleaner is separate.
-	// Let's assume for this step: if file exists, we serve it.
-	// To implement SWR properly, we need to check age.
-	// If age > TTL, we serve it AND trigger background update.
 
 	// Check file existence and age
 	fileInfo, err := os.Stat(cacheFilePath)
@@ -369,9 +317,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		// Feature: Fallback/Default Image
 		if h.Config.DefaultImagePath != "" {
 			if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "NoSuchKey") {
-				// We serve the default image
-				// Note: We might want to cache this response or just serve it directly.
-				// Serving directly for simplicity.
 				http.ServeFile(w, r, h.Config.DefaultImagePath)
 				return
 			}
@@ -388,6 +333,66 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("ETag", etag)
 	serveFile(w, cacheFilePath, encodingType, objectKey, imgOpts.Format)
+}
+
+func (h *Handler) handlePalette(w http.ResponseWriter, r *http.Request, objectKey string, params url.Values) {
+	cacheKey := cache.GenerateKeyProcessed(objectKey, params, "json")
+
+	// Check Cache
+	if h.Cache != nil {
+		if data, found := h.Cache.Get(context.TODO(), cacheKey); found {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			w.Write(data)
+			return
+		}
+	}
+
+	// Fetch and Process
+	// We use singleflight to avoid duplicate processing
+	res, err, _ := h.Group.Do(cacheKey, func() (interface{}, error) {
+		reader, _, err := h.S3.GetObject(context.TODO(), objectKey)
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+
+		colors, err := processor.ExtractPalette(reader)
+		if err != nil {
+			return nil, err
+		}
+
+		resp := map[string]interface{}{
+			"colors": colors,
+		}
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		slog.Error("Palette extraction failed", "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	
+	data := res.([]byte)
+
+	// Save to Cache
+	if h.Cache != nil {
+		h.Cache.Set(context.TODO(), cacheKey, data, h.Config.CacheTTL)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(data)
 }
 
 func (h *Handler) updateCache(ctx context.Context, objectKey, destPath, cacheKey string, opts processor.ImageOptions, encodingType string, shouldProcess, isVideo bool) ([]byte, error) {
@@ -475,10 +480,6 @@ func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey 
 		cacheKey = cache.GenerateKeyProcessed(objectKey, params, imgOpts.Format)
 	} else {
 		// Passthrough
-		// We might need to check encoding too if we want to purge specific encoding?
-		// Default to identity or check params?
-		// For purge, maybe we purge all encodings? 
-		// Simplicity: Purge identity or default
 		cacheKey = cache.GenerateKeyOriginal(objectKey, "identity")
 	}
 
