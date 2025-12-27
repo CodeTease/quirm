@@ -34,6 +34,10 @@ type Config struct {
 	// Features
 	EnableVideoThumbnail bool
 	FaceFinderPath       string
+	// Redis
+	RedisAddr     string
+	RedisPassword string
+	RedisDB       int
 }
 
 // LoadConfig loads configuration from environment variables
@@ -41,6 +45,9 @@ func LoadConfig() Config {
 	godotenv.Load()
 
 	return Config{
+		RedisAddr:            os.Getenv("REDIS_ADDR"),
+		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
+		RedisDB:              getEnvInt("REDIS_DB", 0),
 		S3Endpoint:           os.Getenv("S3_ENDPOINT"),
 		S3Region:             getEnv("S3_REGION", "auto"),
 		S3Bucket:             os.Getenv("S3_BUCKET"),

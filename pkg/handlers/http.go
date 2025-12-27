@@ -47,7 +47,7 @@ type Handler struct {
 	WM          *watermark.Manager
 	Group       *singleflight.Group
 	CacheDir    string
-	MemoryCache *cache.MemoryCache
+	Cache       cache.CacheProvider
 	Limiter     *rate.Limiter // unused if using ipLimiters
 	ipLimiters  *expirable.LRU[string, *rate.Limiter]
 	mu          sync.Mutex
@@ -267,10 +267,10 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Memory Cache Check
-	if h.MemoryCache != nil {
-		if data, found := h.MemoryCache.Get(cacheKey); found {
-			metrics.CacheOpsTotal.WithLabelValues("hit_memory").Inc()
+	// Memory/Redis Cache Check
+	if h.Cache != nil {
+		if data, found := h.Cache.Get(context.TODO(), cacheKey); found {
+			metrics.CacheOpsTotal.WithLabelValues("hit_cache").Inc()
 			w.Header().Set("ETag", etag)
 			w.Header().Set("Cache-Control", "public, max-age=86400")
 			// Determine content type
@@ -327,12 +327,10 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			h.Group.Do(cacheKey, func() (interface{}, error) {
 				if shouldProcess {
 					data, err := h.processAndSave(objectKey, cacheFilePath, imgOpts)
-					if err == nil && h.MemoryCache != nil && data != nil {
-						// Update memory cache
+					if err == nil && h.Cache != nil && len(data) > 0 {
+						// Update cache
 						// processAndSave needs to return data
-						// It currently returns (interface{}, error) but returns nil.
-						// We need to modify processAndSave to return bytes.
-						h.MemoryCache.Set(cacheKey, data.([]byte))
+						h.Cache.Set(context.TODO(), cacheKey, data, h.Config.CacheTTL)
 					}
 					return data, err
 				} else {
@@ -369,15 +367,15 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			if isVideo && h.Config.EnableVideoThumbnail {
 				// Special video processing
 				data, err := h.processVideoAndSave(objectKey, cacheFilePath, imgOpts)
-				if err == nil && h.MemoryCache != nil && data != nil {
-					h.MemoryCache.Set(cacheKey, data.([]byte))
+				if err == nil && h.Cache != nil && len(data) > 0 {
+					h.Cache.Set(context.TODO(), cacheKey, data, h.Config.CacheTTL)
 				}
 				return data, err
 			}
 
 			data, err := h.processAndSave(objectKey, cacheFilePath, imgOpts)
-			if err == nil && h.MemoryCache != nil && data != nil {
-				h.MemoryCache.Set(cacheKey, data.([]byte))
+			if err == nil && h.Cache != nil && len(data) > 0 {
+				h.Cache.Set(context.TODO(), cacheKey, data, h.Config.CacheTTL)
 			}
 			return data, err
 		} else {
@@ -399,17 +397,19 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	serveFile(w, cacheFilePath, encodingType, objectKey, imgOpts.Format)
 }
 
-func (h *Handler) fetchAndSave(objectKey, destPath, encodingType string) (interface{}, error) {
+func (h *Handler) fetchAndSave(objectKey, destPath, encodingType string) ([]byte, error) {
 	reader, _, err := h.S3.GetObject(context.TODO(), objectKey)
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
 
+	// We don't return bytes for fetchAndSave currently as we don't cache originals in Redis yet
+	// to avoid high memory/network usage for large files.
 	return nil, storage.AtomicWrite(destPath, reader, encodingType, h.CacheDir)
 }
 
-func (h *Handler) processAndSave(objectKey, destPath string, opts processor.ImageOptions) (interface{}, error) {
+func (h *Handler) processAndSave(objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
 	reader, size, err := h.S3.GetObject(context.TODO(), objectKey)
 	if err != nil {
 		return nil, err
@@ -444,7 +444,7 @@ func (h *Handler) processAndSave(objectKey, destPath string, opts processor.Imag
 	return data, nil
 }
 
-func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor.ImageOptions) (interface{}, error) {
+func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
 	// For video, we first need the video file locally.
 	// 1. Check if we have the video in cache? Or a temp file.
 	// Since cacheKey for video includes "processed" params, we don't have the original video cached by fetchAndSave usually.

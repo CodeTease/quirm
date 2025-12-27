@@ -61,15 +61,25 @@ func main() {
 	requestGroup := &singleflight.Group{}
 
 	// Initialize caches
+	var cacheProvider cache.CacheProvider
 	memoryCache := cache.NewMemoryCache(100, cfg.CacheTTL) // 100 items limit for memory cache for now
 
+	if cfg.RedisAddr != "" {
+		redisCache := cache.NewRedisCache(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+		cacheProvider = cache.NewTieredCache(memoryCache, redisCache)
+		slog.Info("Initialized Tiered Cache (Memory + Redis)")
+	} else {
+		cacheProvider = memoryCache
+		slog.Info("Initialized Memory Cache")
+	}
+
 	h := &handlers.Handler{
-		Config:      cfg,
-		S3:          s3Client,
-		WM:          wmManager,
-		Group:       requestGroup,
-		CacheDir:    cfg.CacheDir,
-		MemoryCache: memoryCache,
+		Config:   cfg,
+		S3:       s3Client,
+		WM:       wmManager,
+		Group:    requestGroup,
+		CacheDir: cfg.CacheDir,
+		Cache:    cacheProvider,
 	}
 
 	// Initialize ipLimiters map

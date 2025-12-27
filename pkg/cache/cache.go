@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
@@ -10,6 +11,12 @@ import (
 	"sort"
 	"time"
 )
+
+type CacheProvider interface {
+	Get(ctx context.Context, key string) ([]byte, bool)
+	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+	Delete(ctx context.Context, key string) error
+}
 
 func GenerateKeyOriginal(key, encoding string) string {
 	h := sha256.New()
