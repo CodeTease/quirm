@@ -20,7 +20,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/muesli/smartcrop v0.3.0
 	github.com/prometheus/client_golang v1.23.2
-	golang.org/x/image v0.0.0-20211028202545-6944b10bf410
+	golang.org/x/image v0.18.0
 	golang.org/x/sync v0.18.0
 	golang.org/x/time v0.14.0
 )
