@@ -524,8 +524,8 @@ func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor
 		}
 		// Register cleanup
 		cleanup = func() {
-			os.Remove(tmpFile.Name())
 			tmpFile.Close()
+			os.Remove(tmpFile.Name())
 		}
 		// Ensure cleanup happens if we return early (but we need it to persist for GenerateThumbnail)
 		// We defer cleanup at the end of function, which is fine since GenerateThumbnail is synchronous.

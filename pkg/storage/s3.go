@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
@@ -98,16 +101,7 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 	})
 	if err != nil {
 		// Failover Logic
-		if s.backupBucket != "" {
-			// Check if error is NoSuchKey or equivalent
-			// AWS SDK v2 errors are checked differently.
-			// Simplified: We assume almost any error on GET except context cancel might be worth trying backup?
-			// But spec says "If bucket fails or file not found".
-			// So let's try backup.
-			
-			// We could log here
-			// slog.Info("Primary bucket fetch failed, trying backup", "error", err, "bucket", s.backupBucket)
-			
+		if s.backupBucket != "" && shouldFailover(err) {
 			respBackup, errBackup := s.client.GetObject(ctx, &s3.GetObjectInput{
 				Bucket: aws.String(s.backupBucket),
 				Key:    aws.String(key),
@@ -120,10 +114,6 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 				}
 				return respBackup.Body, contentLength, nil
 			}
-			// If backup fails, return ORIGINAL error usually, or backup error?
-			// Typically original error is more relevant if both fail, unless backup error is "found but ..."
-			// Let's return the original error to keep semantics, or maybe wrapping?
-			// But if backup also 404s, returning original 404 is fine.
 		}
 
 		return nil, 0, err
@@ -158,4 +148,34 @@ func (s *S3Client) GetPresignedURL(ctx context.Context, key string, expiry time.
 		return "", fmt.Errorf("failed to presign request: %w", err)
 	}
 	return request.URL, nil
+}
+
+func shouldFailover(err error) bool {
+	// 1. Check specific API error codes (e.g. "NoSuchKey")
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		if code == "NoSuchKey" || code == "NotFound" {
+			return true
+		}
+	}
+
+	// 2. Check HTTP Status Codes via ResponseError
+	var respErr *smithyhttp.ResponseError
+	if errors.As(err, &respErr) {
+		status := respErr.Response.StatusCode
+		if status == http.StatusNotFound || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests {
+			return true
+		}
+		if status >= 500 {
+			return true
+		}
+		// Client error (4xx) that isn't 404/408/429 -> Do NOT failover
+		if status >= 400 && status < 500 {
+			return false
+		}
+	}
+
+	// 3. Generic/Network errors -> Failover as safety net
+	return true
 }
