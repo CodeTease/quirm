@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"time"
@@ -10,6 +11,10 @@ import (
 
 // Config holds application configuration
 type Config struct {
+	// Features
+	Presets          map[string]string
+	DefaultImagePath string
+
 	S3Endpoint        string
 	S3Region          string
 	S3Bucket          string
@@ -23,6 +28,9 @@ type Config struct {
 	CacheTTL          time.Duration
 	CleanupInterval   time.Duration
 	Debug             bool
+	// Memory Cache
+	MemoryCacheSize       int
+	MemoryCacheLimitBytes int64
 	// New Configs
 	SecretKey        string
 	WatermarkPath    string
@@ -30,8 +38,9 @@ type Config struct {
 	MaxImageSizeMB   int64
 	EnableMetrics    bool
 	// Security
-	AllowedDomains []string
-	RateLimit      int // Requests per second
+	AllowedDomains   []string
+	AllowedCountries []string
+	RateLimit        int // Requests per second
 	// Features
 	EnableVideoThumbnail bool
 	FaceFinderPath       string
@@ -58,23 +67,40 @@ func LoadConfig() Config {
 		S3ForcePathStyle:     getEnvBool("S3_FORCE_PATH_STYLE", false),
 		S3UseCustomDomain:    getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
 		Port:                 getEnv("PORT", "8080"),
-		CacheDir:             getEnv("CACHE_DIR", "./cache_data"),
-		CacheTTL:             time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
-		CleanupInterval:      time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
-		Debug:                getEnvBool("DEBUG", false),
-		SecretKey:            os.Getenv("SECRET_KEY"),
+		CacheDir:              getEnv("CACHE_DIR", "./cache_data"),
+		CacheTTL:              time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
+		CleanupInterval:       time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
+		Debug:                 getEnvBool("DEBUG", false),
+		MemoryCacheSize:       getEnvInt("MEMORY_CACHE_SIZE", 100),
+		MemoryCacheLimitBytes: int64(getEnvInt("MEMORY_CACHE_LIMIT_BYTES", 0)),
+		SecretKey:             os.Getenv("SECRET_KEY"),
 		WatermarkPath:        os.Getenv("WATERMARK_PATH"),
 		WatermarkOpacity:     getEnvFloat("WATERMARK_OPACITY", 0.5),
 		MaxImageSizeMB:       int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
 		EnableMetrics:        getEnvBool("ENABLE_METRICS", false),
 		AllowedDomains:       getEnvSlice("ALLOWED_DOMAINS"),
+		AllowedCountries:     getEnvSlice("ALLOWED_COUNTRIES"),
 		RateLimit:            getEnvInt("RATE_LIMIT", 10),
 		EnableVideoThumbnail: getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
 		FaceFinderPath:       getEnv("FACE_FINDER_PATH", "facefinder"),
+		Presets:              getEnvMap("PRESETS"),
+		DefaultImagePath:     os.Getenv("DEFAULT_IMAGE_PATH"),
 	}
 }
 
 // Helpers
+func getEnvMap(key string) map[string]string {
+	val := os.Getenv(key)
+	if val == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(val), &m); err != nil {
+		return nil
+	}
+	return m
+}
+
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value

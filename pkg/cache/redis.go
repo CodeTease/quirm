@@ -11,13 +11,13 @@ import (
 var _ CacheProvider = (*RedisCache)(nil)
 
 type RedisCache struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
-func NewRedisCache(addr, password string, db int) *RedisCache {
+func NewRedisCache(addrs []string, password string, db int) *RedisCache {
 	return &RedisCache{
-		client: redis.NewClient(&redis.Options{
-			Addr:     addr,
+		client: redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:    addrs,
 			Password: password,
 			DB:       db,
 		}),

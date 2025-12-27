@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -60,6 +61,24 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 		return nil, fmt.Errorf("decode error: %w", err)
 	}
 	defer img.Close()
+
+	// PDF Specific Logic
+	// If the image is a PDF, we might need to handle transparency (flatten to white)
+	// because PDFs are often transparent and saving as JPEG results in black background.
+	// Also ensures that if it's a multi-page PDF, we are working with the loaded page (default first page).
+	if img.OriginalFormat() == vips.ImageTypePDF {
+		// Flatten to white if it has alpha
+		if img.HasAlpha() {
+			// Flatten with white background
+			// libvips flatten uses the background color parameter
+			// govips Flatten uses a Color struct
+			white := &vips.Color{R: 255, G: 255, B: 255}
+			if err := img.Flatten(white); err != nil {
+				// Log but continue
+				fmt.Printf("Error flattening PDF: %v\n", err)
+			}
+		}
+	}
 
 	// 2. Transform
 	if opts.Width > 0 || opts.Height > 0 {
@@ -333,19 +352,23 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 		quality = 80
 	}
 
+	// Unconditionally force strip metadata
+	stripMetadata := true
+
 	switch format {
 	case "png":
 		ep := vips.NewPngExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.Compression = 9 // Max compression
+			ep.Palette = true  // Use palette if possible
 		}
 		return img.ExportPng(ep)
 	case "webp":
 		ep := vips.NewWebpExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.ReductionEffort = 6
 		}
@@ -353,7 +376,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 	case "avif":
 		ep := vips.NewAvifExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.Speed = 0 // Slowest but best size
 		}
@@ -361,7 +384,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 	case "gif":
 		ep := vips.NewGifExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		return img.ExportGIF(ep)
 	case "jxl":
 		// JXL Support via Generic Export or custom
@@ -370,7 +393,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 		ep := vips.NewDefaultExportParams()
 		ep.Format = vips.ImageTypeJXL
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.Effort = 7 // Higher effort
 		}
@@ -378,7 +401,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 	case "jpeg", "jpg":
 		ep := vips.NewJpegExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.Interlace = true
 			ep.OptimizeCoding = true
@@ -388,6 +411,95 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 	default:
 		ep := vips.NewJpegExportParams()
 		ep.Quality = quality
+		ep.StripMetadata = stripMetadata
 		return img.ExportJpeg(ep)
 	}
+}
+
+// ExtractPalette extracts dominant colors from the image.
+func ExtractPalette(r io.Reader) ([]string, error) {
+	img, err := vips.NewImageFromReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode error: %w", err)
+	}
+	defer img.Close()
+
+	// Resize to small size (100x100) to find dominant colors faster and group them
+	if err := img.ThumbnailWithSize(100, 100, vips.InterestingCentre, vips.SizeForce); err != nil {
+		return nil, err
+	}
+
+	// Ensure sRGB
+	if err := img.ToColorSpace(vips.InterpretationSRGB); err != nil {
+		return nil, err
+	}
+
+	pixels, err := img.ToBytes()
+	if err != nil {
+		return nil, err
+	}
+
+	bands := img.Bands()
+	w := img.Width()
+	h := img.Height()
+
+	colorCounts := make(map[string]int)
+
+	toHex := func(r, g, b uint8) string {
+		return fmt.Sprintf("#%02x%02x%02x", r, g, b)
+	}
+
+	for i := 0; i < w*h; i++ {
+		offset := i * bands
+		if offset+bands > len(pixels) {
+			break
+		}
+		
+		var rVal, gVal, bVal uint8
+		
+		if bands >= 3 {
+			rVal = pixels[offset]
+			gVal = pixels[offset+1]
+			bVal = pixels[offset+2]
+		} else if bands == 1 {
+			// Grayscale
+			val := pixels[offset]
+			rVal, gVal, bVal = val, val, val
+		} else if bands == 2 {
+			// Grayscale + Alpha?
+			val := pixels[offset]
+			rVal, gVal, bVal = val, val, val
+		} else {
+			// Fallback (shouldn't happen with sRGB/BW)
+			continue
+		}
+
+		hex := toHex(rVal, gVal, bVal)
+		colorCounts[hex]++
+	}
+
+	type colorFreq struct {
+		Hex   string
+		Count int
+	}
+	var freqs []colorFreq
+	for k, v := range colorCounts {
+		freqs = append(freqs, colorFreq{k, v})
+	}
+
+	sort.Slice(freqs, func(i, j int) bool {
+		return freqs[i].Count > freqs[j].Count
+	})
+
+	limit := 5
+	if len(freqs) < limit {
+		limit = len(freqs)
+	}
+
+	result := make([]string, limit)
+	for i := 0; i < limit; i++ {
+		result[i] = freqs[i].Hex
+	}
+
+	return result, nil
 }
