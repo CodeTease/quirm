@@ -13,6 +13,7 @@ type Config struct {
 	S3Endpoint        string
 	S3Region          string
 	S3Bucket          string
+	S3BackupBucket    string
 	S3AccessKey       string
 	S3SecretKey       string
 	S3ForcePathStyle  bool
@@ -51,6 +52,7 @@ func LoadConfig() Config {
 		S3Endpoint:           os.Getenv("S3_ENDPOINT"),
 		S3Region:             getEnv("S3_REGION", "auto"),
 		S3Bucket:             os.Getenv("S3_BUCKET"),
+		S3BackupBucket:       os.Getenv("S3_BACKUP_BUCKET"),
 		S3AccessKey:          os.Getenv("S3_ACCESS_KEY"),
 		S3SecretKey:          os.Getenv("S3_SECRET_KEY"),
 		S3ForcePathStyle:     getEnvBool("S3_FORCE_PATH_STYLE", false),

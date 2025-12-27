@@ -19,8 +19,9 @@ import (
 )
 
 type S3Client struct {
-	client *s3.Client
-	bucket string
+	client       *s3.Client
+	bucket       string
+	backupBucket string
 }
 
 // Ensure S3Client implements StorageProvider
@@ -79,8 +80,9 @@ func NewS3Client(cfg appConfig.Config) (*S3Client, error) {
 	})
 
 	return &S3Client{
-		client: client,
-		bucket: cfg.S3Bucket,
+		client:       client,
+		bucket:       cfg.S3Bucket,
+		backupBucket: cfg.S3BackupBucket,
 	}, nil
 }
 
@@ -91,6 +93,35 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		// Failover Logic
+		if s.backupBucket != "" {
+			// Check if error is NoSuchKey or equivalent
+			// AWS SDK v2 errors are checked differently.
+			// Simplified: We assume almost any error on GET except context cancel might be worth trying backup?
+			// But spec says "If bucket fails or file not found".
+			// So let's try backup.
+			
+			// We could log here
+			// slog.Info("Primary bucket fetch failed, trying backup", "error", err, "bucket", s.backupBucket)
+			
+			respBackup, errBackup := s.client.GetObject(ctx, &s3.GetObjectInput{
+				Bucket: aws.String(s.backupBucket),
+				Key:    aws.String(key),
+			})
+			if errBackup == nil {
+				metrics.S3FetchDuration.Observe(time.Since(start).Seconds())
+				var contentLength int64
+				if respBackup.ContentLength != nil {
+					contentLength = *respBackup.ContentLength
+				}
+				return respBackup.Body, contentLength, nil
+			}
+			// If backup fails, return ORIGINAL error usually, or backup error?
+			// Typically original error is more relevant if both fail, unless backup error is "found but ..."
+			// Let's return the original error to keep semantics, or maybe wrapping?
+			// But if backup also 404s, returning original 404 is fine.
+		}
+
 		return nil, 0, err
 	}
 

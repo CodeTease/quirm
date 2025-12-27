@@ -51,9 +51,9 @@ func GenerateThumbnail(videoURL string, timestamp string) (*bytes.Buffer, error)
 	return &stdout, nil
 }
 
-// GenerateAnimatedThumbnail generates a 3-second animated GIF thumbnail for a video file using ffmpeg.
+// GenerateAnimatedThumbnail generates a 3-second animated thumbnail for a video file using ffmpeg.
 // It extracts 3 seconds from the beginning (or timestamp).
-func GenerateAnimatedThumbnail(videoURL string, duration string) (*bytes.Buffer, error) {
+func GenerateAnimatedThumbnail(videoURL string, duration string, width int, height int, format string) (*bytes.Buffer, error) {
 	start := time.Now()
 	defer func() {
 		metrics.ImageProcessDuration.Observe(time.Since(start).Seconds())
@@ -69,24 +69,49 @@ func GenerateAnimatedThumbnail(videoURL string, duration string) (*bytes.Buffer,
 		duration = "3"
 	}
 
-	// Logic: Extract 3 seconds from 00:00:00
-	// Use palettegen/paletteuse for better GIF quality
-	// Scale to fixed width (e.g., 320) to keep size reasonable, or rely on caller to resize?
-	// The plan says "pipe through libvips to compress".
-	// But resizing animated GIFs in libvips (via Go) can be complex if we don't load all frames.
-	// For robustness, let's output a reasonably sized GIF here. 
-	// 320px width is a good default for "thumbnail".
-	
-	// Command: ffmpeg -ss 00:00:00 -t <duration> -i <videoURL> -vf "fps=10,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -f gif -
-	
-	cmd := exec.Command("ffmpeg",
-		"-ss", "00:00:00",
-		"-t", duration,
-		"-i", videoURL,
-		"-vf", "fps=10,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
-		"-f", "gif",
-		"-",
-	)
+	// Determine dimensions
+	w := "320"
+	h := "-1"
+	if width > 0 {
+		w = fmt.Sprintf("%d", width)
+	}
+	if height > 0 {
+		h = fmt.Sprintf("%d", height)
+	}
+	scaleFilter := fmt.Sprintf("scale=%s:%s:flags=lanczos", w, h)
+
+	var cmd *exec.Cmd
+
+	if format == "webp" {
+		// Animated WebP
+		// ffmpeg -ss 00:00:00 -t 3 -i input -vf "fps=10,scale=..." -vcodec libwebp -lossless 0 -compression_level 4 -q:v 75 -loop 0 -preset default -an -vsync 0 -f webp -
+		cmd = exec.Command("ffmpeg",
+			"-ss", "00:00:00",
+			"-t", duration,
+			"-i", videoURL,
+			"-vf", "fps=10,"+scaleFilter,
+			"-vcodec", "libwebp",
+			"-lossless", "0",
+			"-compression_level", "4",
+			"-q:v", "75",
+			"-loop", "0",
+			"-preset", "default",
+			"-an",
+			"-f", "webp",
+			"-",
+		)
+	} else {
+		// GIF (Default)
+		// Use palettegen/paletteuse for better GIF quality
+		cmd = exec.Command("ffmpeg",
+			"-ss", "00:00:00",
+			"-t", duration,
+			"-i", videoURL,
+			"-vf", fmt.Sprintf("fps=10,%s,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", scaleFilter),
+			"-f", "gif",
+			"-",
+		)
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
