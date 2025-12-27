@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"time"
@@ -10,6 +11,10 @@ import (
 
 // Config holds application configuration
 type Config struct {
+	// Features
+	Presets          map[string]string
+	DefaultImagePath string
+
 	S3Endpoint        string
 	S3Region          string
 	S3Bucket          string
@@ -73,10 +78,24 @@ func LoadConfig() Config {
 		RateLimit:            getEnvInt("RATE_LIMIT", 10),
 		EnableVideoThumbnail: getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
 		FaceFinderPath:       getEnv("FACE_FINDER_PATH", "facefinder"),
+		Presets:              getEnvMap("PRESETS"),
+		DefaultImagePath:     os.Getenv("DEFAULT_IMAGE_PATH"),
 	}
 }
 
 // Helpers
+func getEnvMap(key string) map[string]string {
+	val := os.Getenv(key)
+	if val == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(val), &m); err != nil {
+		return nil
+	}
+	return m
+}
+
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value

@@ -333,19 +333,23 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 		quality = 80
 	}
 
+	// Unconditionally force strip metadata
+	stripMetadata := true
+
 	switch format {
 	case "png":
 		ep := vips.NewPngExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.Compression = 9 // Max compression
+			ep.Palette = true  // Use palette if possible
 		}
 		return img.ExportPng(ep)
 	case "webp":
 		ep := vips.NewWebpExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.ReductionEffort = 6
 		}
@@ -353,7 +357,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 	case "avif":
 		ep := vips.NewAvifExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.Speed = 0 // Slowest but best size
 		}
@@ -361,7 +365,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 	case "gif":
 		ep := vips.NewGifExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		return img.ExportGIF(ep)
 	case "jxl":
 		// JXL Support via Generic Export or custom
@@ -370,7 +374,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 		ep := vips.NewDefaultExportParams()
 		ep.Format = vips.ImageTypeJXL
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.Effort = 7 // Higher effort
 		}
@@ -378,7 +382,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 	case "jpeg", "jpg":
 		ep := vips.NewJpegExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = true
+		ep.StripMetadata = stripMetadata
 		if smart {
 			ep.Interlace = true
 			ep.OptimizeCoding = true
@@ -388,6 +392,7 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 	default:
 		ep := vips.NewJpegExportParams()
 		ep.Quality = quality
+		ep.StripMetadata = stripMetadata
 		return img.ExportJpeg(ep)
 	}
 }

@@ -200,8 +200,17 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 0.6 Feature: Purge Cache
+	// We require signature verification (handled above) or a specific admin header if signatures aren't used.
+	// For simplicity in this context, we rely on the signature verification above if enabled.
+	// If SecretKey is not set, purge is open (like the rest of the app).
+	if r.Method == http.MethodDelete {
+		h.handlePurge(w, r, objectKey, queryParams)
+		return
+	}
+
 	// 2. Parse Image Options
-	imgOpts := parseImageOptions(queryParams)
+	imgOpts := parseImageOptions(queryParams, h.Config.Presets)
 
 	// Determine Mode
 	isImage := isImageFile(objectKey)
@@ -357,6 +366,17 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
+		// Feature: Fallback/Default Image
+		if h.Config.DefaultImagePath != "" {
+			if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "NoSuchKey") {
+				// We serve the default image
+				// Note: We might want to cache this response or just serve it directly.
+				// Serving directly for simplicity.
+				http.ServeFile(w, r, h.Config.DefaultImagePath)
+				return
+			}
+		}
+
 		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") {
 			http.Error(w, "Not Found", http.StatusNotFound)
 			return
@@ -434,6 +454,49 @@ func (h *Handler) processAndSave(objectKey, destPath string, opts processor.Imag
 	}
 
 	return data, nil
+}
+
+func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey string, params url.Values) {
+	// Determine keys to purge
+	// If params provided, we generate processed key.
+	// If no params, we might want to purge original? But usually we purge processed variants.
+	// If "all" param provided?
+	
+	// Implementation: Purge specific variant based on params
+	// Need to parse options to generate key properly
+	imgOpts := parseImageOptions(params, h.Config.Presets)
+	isImage := isImageFile(objectKey)
+	isVideo := isVideoFile(objectKey)
+	
+	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && h.Config.EnableVideoThumbnail)
+	
+	var cacheKey string
+	if shouldProcess {
+		cacheKey = cache.GenerateKeyProcessed(objectKey, params, imgOpts.Format)
+	} else {
+		// Passthrough
+		// We might need to check encoding too if we want to purge specific encoding?
+		// Default to identity or check params?
+		// For purge, maybe we purge all encodings? 
+		// Simplicity: Purge identity or default
+		cacheKey = cache.GenerateKeyOriginal(objectKey, "identity")
+	}
+
+	// Delete from Cache Provider (Memory + Redis)
+	if h.Cache != nil {
+		if err := h.Cache.Delete(context.TODO(), cacheKey); err != nil {
+			slog.Warn("Failed to delete from cache provider", "key", cacheKey, "error", err)
+		}
+	}
+	
+	// Delete from Disk
+	cacheFilePath := filepath.Join(h.CacheDir, cacheKey)
+	if err := os.Remove(cacheFilePath); err != nil && !os.IsNotExist(err) {
+		slog.Warn("Failed to delete from disk", "path", cacheFilePath, "error", err)
+	}
+	
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Purged"))
 }
 
 func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
@@ -584,7 +647,20 @@ func validateSignature(path string, params url.Values, secret string) bool {
 	return hmac.Equal([]byte(got), []byte(expected))
 }
 
-func parseImageOptions(params url.Values) processor.ImageOptions {
+func parseImageOptions(params url.Values, presets map[string]string) processor.ImageOptions {
+	// Feature: Named Presets
+	if presetName := params.Get("preset"); presetName != "" && len(presets) > 0 {
+		if presetQuery, ok := presets[presetName]; ok {
+			// Parse preset values
+			presetParams, err := url.ParseQuery(presetQuery)
+			if err == nil {
+				// Strict Mode: When a preset is used, we ONLY use the preset's parameters.
+				// We ignore any other dimensions provided in the original query to prevent overriding.
+				return parseImageOptions(presetParams, nil)
+			}
+		}
+	}
+
 	opts := processor.ImageOptions{}
 	if w := params.Get("w"); w != "" {
 		opts.Width, _ = strconv.Atoi(w)
@@ -621,7 +697,7 @@ func parseImageOptions(params url.Values) processor.ImageOptions {
 
 func isImageFile(key string) bool {
 	ext := strings.ToLower(filepath.Ext(key))
-	return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp"
+	return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp" || ext == ".pdf"
 }
 
 func isVideoFile(key string) bool {
