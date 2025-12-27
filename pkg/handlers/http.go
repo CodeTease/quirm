@@ -472,33 +472,63 @@ func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor
 	}
 
 	// Generate Thumbnail
-	// We use "00:00:01" as default timestamp if not provided via some param (not spec'd, so default)
-	buf, err := processor.GenerateThumbnail(tmpFile.Name(), "00:00:01")
-	if err != nil {
-		return nil, err
+	var buf *bytes.Buffer
+
+	if opts.Animated {
+		// Generate Animated GIF (3 seconds)
+		buf, err = processor.GenerateAnimatedThumbnail(tmpFile.Name(), "3")
+		if err != nil {
+			return nil, err
+		}
+		// For animated thumbnails, we assume GenerateAnimatedThumbnail returns an already sized GIF (e.g. 320px width).
+		// Re-processing an animated GIF via Process (govips) to resize/watermark is complex and might flatten it.
+		// For this iteration, we return the generated GIF directly if no further processing is critically needed that supports animation.
+		// However, the pipeline expects us to respect 'opts'.
+		// If we pass it to processor.Process, we must ensure processor.Process handles animation correctly.
+		// Currently processor.Process calls vips.NewImageFromReader -> ThumbnailWithSize -> Export.
+		// vips.ThumbnailWithSize typically handles only the first frame unless configured otherwise.
+		// To keep "Visual Magic" reliable, if it's animated, we skip processor.Process for now (or assume ffmpeg output is final).
+		// We'll set the output data directly.
+		
+		// If the user requested a specific format like webp, we might need conversion.
+		// ffmpeg output is GIF.
+		// If we want webp, we could use ffmpeg to output webp directly in GenerateAnimatedThumbnail, 
+		// but sticking to GIF is safer for compatibility unless we change GenerateAnimatedThumbnail signature.
+		
+		// Let's just return the buffer.
+		data := buf.Bytes()
+		err = storage.AtomicWrite(destPath, bytes.NewReader(data), "identity", h.CacheDir)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
+
+	} else {
+		// We use "00:00:01" as default timestamp if not provided via some param (not spec'd, so default)
+		buf, err = processor.GenerateThumbnail(tmpFile.Name(), "00:00:01")
+		if err != nil {
+			return nil, err
+		}
+
+		// Now we have the thumbnail image in buf (JPEG).
+		// We might need to resize it or apply other image options (watermark, etc.)
+		// opts contain Width, Height, etc.
+		// GenerateThumbnail returns raw frame.
+		// We should pipe it through Processor.Process to handle resizing/watermarking.
+
+		buf2, err := processor.Process(buf, opts, nil, 0, objectKey+".jpg") // Treat as jpg
+		if err != nil {
+			return nil, err
+		}
+		
+		data := buf2.Bytes()
+		err = storage.AtomicWrite(destPath, bytes.NewReader(data), "identity", h.CacheDir)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
 	}
 
-	// Now we have the thumbnail image in buf (JPEG).
-	// We might need to resize it or apply other image options (watermark, etc.)
-	// opts contain Width, Height, etc.
-	// GenerateThumbnail returns raw frame.
-	// We should pipe it through Processor.Process to handle resizing/watermarking.
-
-	buf2, err := processor.Process(buf, opts, nil, 0, objectKey+".jpg") // Treat as jpg
-	if err != nil {
-		return nil, err
-	}
-
-	// Save to cache
-	// Capture bytes BEFORE writing
-	data := buf2.Bytes()
-
-	err = storage.AtomicWrite(destPath, bytes.NewReader(data), "identity", h.CacheDir)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
 }
 
 func setContentType(w http.ResponseWriter, objectKey, forcedFormat string) {
@@ -592,6 +622,11 @@ func parseImageOptions(params url.Values) processor.ImageOptions {
 	// Check for blurhash
 	if bh := params.Get("blurhash"); bh == "true" || bh == "1" {
 		opts.Blurhash = true
+	}
+
+	// Check for animated
+	if anim := params.Get("animated"); anim == "true" || anim == "1" {
+		opts.Animated = true
 	}
 
 	return opts

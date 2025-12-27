@@ -43,6 +43,7 @@ type ImageOptions struct {
 	TextOpacity      float64
 	Blurhash         bool
 	SmartCompression bool
+	Animated         bool
 }
 
 // Process decodes, transforms, watermarks, and encodes the image.

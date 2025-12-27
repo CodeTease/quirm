@@ -24,7 +24,8 @@ RUN CGO_ENABLED=1 GOOS=linux go build -o quirm ./main.go
 FROM alpine:latest
 
 # Install runtime dependencies for libvips
-RUN apk add --no-cache vips
+# poppler-glib is required for PDF support
+RUN apk add --no-cache vips poppler-glib
 
 WORKDIR /app
 
