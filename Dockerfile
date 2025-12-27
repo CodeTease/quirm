@@ -2,7 +2,8 @@
 FROM golang:1.24-alpine AS builder
 
 # Install build dependencies (needed for CGO)
-RUN apk add --no-cache gcc musl-dev
+# libvips-dev is required for govips
+RUN apk add --no-cache gcc musl-dev vips-dev
 
 WORKDIR /app
 
@@ -13,13 +14,18 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build static binary with CGO
-# Note: CGO_ENABLED=1 is required for github.com/chai2010/webp, 
-# but we link statically to create a self-contained binary.
-RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o quirm ./main.go
+# Build binary with CGO
+# Note: govips relies on libvips shared libraries, so we cannot easily build a fully static binary
+# unless we compile libvips statically too (which is complex). 
+# We will build a dynamically linked binary and install libvips in the runtime image.
+RUN CGO_ENABLED=1 GOOS=linux go build -o quirm ./main.go
 
 # Stage 2: Runtime
 FROM alpine:latest
+
+# Install runtime dependencies for libvips
+# poppler-glib is required for PDF support
+RUN apk add --no-cache vips poppler-glib
 
 WORKDIR /app
 

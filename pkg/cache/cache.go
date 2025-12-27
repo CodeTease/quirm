@@ -1,15 +1,22 @@
 package cache
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
 )
+
+type CacheProvider interface {
+	Get(ctx context.Context, key string) ([]byte, bool)
+	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+	Delete(ctx context.Context, key string) error
+}
 
 func GenerateKeyOriginal(key, encoding string) string {
 	h := sha256.New()
@@ -42,12 +49,10 @@ func StartCleaner(dir string, ttl, interval time.Duration, debug bool) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
-		if debug {
-			log.Println("[CLEANUP] Starting cache cleanup...")
-		}
+		slog.Debug("[CLEANUP] Starting cache cleanup...")
 		files, err := os.ReadDir(dir)
 		if err != nil {
-			log.Printf("[CLEANUP] Error reading dir: %v", err)
+			slog.Error("[CLEANUP] Error reading dir", "error", err)
 			continue
 		}
 		deletedCount := 0
@@ -63,8 +68,8 @@ func StartCleaner(dir string, ttl, interval time.Duration, debug bool) {
 				}
 			}
 		}
-		if debug && deletedCount > 0 {
-			log.Printf("[CLEANUP] Removed %d stale files.", deletedCount)
+		if deletedCount > 0 {
+			slog.Debug("[CLEANUP] Cleanup finished", "deleted_files", deletedCount)
 		}
 	}
 }

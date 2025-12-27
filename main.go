@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -17,10 +17,12 @@ import (
 
 	"github.com/CodeTease/quirm/pkg/config"
 	"github.com/CodeTease/quirm/pkg/handlers"
+	"github.com/CodeTease/quirm/pkg/logger"
 	"github.com/CodeTease/quirm/pkg/metrics"
 	"github.com/CodeTease/quirm/pkg/processor"
 	"github.com/CodeTease/quirm/pkg/storage"
 	"github.com/CodeTease/quirm/pkg/watermark"
+	"github.com/davidbyttow/govips/v2/vips"
 )
 
 var (
@@ -28,10 +30,16 @@ var (
 )
 
 func main() {
+	// Initialize libvips
+	vips.Startup(nil)
+	defer vips.Shutdown()
+
 	cfg := config.LoadConfig()
+	logger.Init(cfg.Debug)
 
 	if cfg.S3Bucket == "" || cfg.S3AccessKey == "" || cfg.S3SecretKey == "" {
-		log.Fatal("Fatal: Missing required S3 configuration.")
+		slog.Error("Fatal: Missing required S3 configuration.")
+		os.Exit(1)
 	}
 
 	if _, err := os.Stat(cfg.CacheDir); os.IsNotExist(err) {
@@ -41,7 +49,7 @@ func main() {
 	// Initialize components
 	if cfg.FaceFinderPath != "" {
 		if err := processor.LoadCascade(cfg.FaceFinderPath); err != nil {
-			log.Printf("Warning: Failed to load facefinder cascade: %v. Face detection will be disabled.", err)
+			slog.Warn("Failed to load facefinder cascade. Face detection will be disabled.", "error", err)
 		}
 	}
 
@@ -51,21 +59,32 @@ func main() {
 
 	s3Client, err := storage.NewS3Client(cfg)
 	if err != nil {
-		log.Fatalf("Fatal: Failed to load AWS config: %v", err)
+		slog.Error("Fatal: Failed to load AWS config", "error", err)
+		os.Exit(1)
 	}
 
 	requestGroup := &singleflight.Group{}
 
 	// Initialize caches
+	var cacheProvider cache.CacheProvider
 	memoryCache := cache.NewMemoryCache(100, cfg.CacheTTL) // 100 items limit for memory cache for now
 
+	if cfg.RedisAddr != "" {
+		redisCache := cache.NewRedisCache(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+		cacheProvider = cache.NewTieredCache(memoryCache, redisCache)
+		slog.Info("Initialized Tiered Cache (Memory + Redis)")
+	} else {
+		cacheProvider = memoryCache
+		slog.Info("Initialized Memory Cache")
+	}
+
 	h := &handlers.Handler{
-		Config:      cfg,
-		S3:          s3Client,
-		WM:          wmManager,
-		Group:       requestGroup,
-		CacheDir:    cfg.CacheDir,
-		MemoryCache: memoryCache,
+		Config:   cfg,
+		S3:       s3Client,
+		WM:       wmManager,
+		Group:    requestGroup,
+		CacheDir: cfg.CacheDir,
+		Cache:    cacheProvider,
 	}
 
 	// Initialize ipLimiters map
@@ -81,6 +100,9 @@ func main() {
 	}
 
 	http.HandleFunc("/", h.HandleRequest)
-	fmt.Printf("Quirm v%s running on port %s\n", Version, cfg.Port)
-	log.Fatal(http.ListenAndServe(":"+cfg.Port, nil))
+	slog.Info("Quirm running", "version", Version, "port", cfg.Port)
+	if err := http.ListenAndServe(":"+cfg.Port, nil); err != nil {
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
+	}
 }
