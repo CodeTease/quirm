@@ -51,6 +51,70 @@ func GenerateThumbnail(videoURL string, timestamp string) (*bytes.Buffer, error)
 	return &stdout, nil
 }
 
+// GenerateStoryboard generates a storyboard image (grid of frames) for the video.
+// interval: timestamp interval between frames (default "1")
+// cols, rows: grid dimensions
+func GenerateStoryboard(videoURL string, interval string, cols, rows int, width int) (*bytes.Buffer, error) {
+	start := time.Now()
+	defer func() {
+		metrics.ImageProcessDuration.Observe(time.Since(start).Seconds())
+	}()
+
+	_, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg not found: %w", err)
+	}
+
+	if cols <= 0 {
+		cols = 5
+	}
+	if rows <= 0 {
+		rows = 5
+	}
+	if width <= 0 {
+		width = 160 // default thumbnail width
+	}
+
+	// Logic for interval:
+	// We use "fps=1/<interval>" to select frames every X seconds.
+	// If interval is provided as string (e.g. "10"), we use it.
+	// We assume interval is in seconds.
+
+	fpsFilter := "fps=1"
+	if interval != "" {
+		fpsFilter = fmt.Sprintf("fps=1/%s", interval)
+	}
+
+	tileFilter := fmt.Sprintf("tile=%dx%d", cols, rows)
+	scaleFilter := fmt.Sprintf("scale=%d:-1", width)
+
+	// Combine filters
+	// ffmpeg -i input -vf "fps=1/10,scale=160:-1,tile=5x5" -frames:v 1 output.jpg
+	vf := fmt.Sprintf("%s,%s,%s", fpsFilter, scaleFilter, tileFilter)
+
+	cmd := exec.Command("ffmpeg",
+		"-i", videoURL,
+		"-vf", vf,
+		"-frames:v", "1",
+		"-f", "image2",
+		"-c:v", "mjpeg",
+		"-",
+	)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err != nil {
+		metrics.ImageProcessErrorsTotal.Inc()
+		return nil, fmt.Errorf("ffmpeg storyboard error: %v, stderr: %s", err, stderr.String())
+	}
+
+	return &stdout, nil
+}
+
 // GenerateAnimatedThumbnail generates a 3-second animated thumbnail for a video file using ffmpeg.
 // It extracts 3 seconds from the beginning (or timestamp).
 func GenerateAnimatedThumbnail(videoURL string, duration string, width int, height int, format string) (*bytes.Buffer, error) {

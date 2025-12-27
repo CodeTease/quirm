@@ -45,29 +45,45 @@ func GenerateKeyProcessed(key string, params url.Values, format string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func GetCachePath(dir, key string) string {
+	if len(key) < 4 {
+		return filepath.Join(dir, key)
+	}
+	return filepath.Join(dir, key[0:2], key[2:4], key)
+}
+
 func StartCleaner(dir string, hardTTL, interval time.Duration, debug bool) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
 		slog.Debug("[CLEANUP] Starting cache cleanup...")
-		files, err := os.ReadDir(dir)
-		if err != nil {
-			slog.Error("[CLEANUP] Error reading dir", "error", err)
-			continue
-		}
 		deletedCount := 0
-		for _, file := range files {
-			info, err := file.Info()
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
-				continue
+				return nil // skip errors
+			}
+			if d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
 			}
 			if time.Since(info.ModTime()) > hardTTL {
-				path := filepath.Join(dir, file.Name())
 				if err := os.Remove(path); err == nil {
 					deletedCount++
 				}
 			}
+			return nil
+		})
+
+		if err != nil {
+			slog.Error("[CLEANUP] Error walking dir", "error", err)
 		}
+
+		// Clean empty directories (optional, but good for sharding)
+		// We can do another pass or do it carefully. For now, we skip.
+
 		if deletedCount > 0 {
 			slog.Debug("[CLEANUP] Cleanup finished", "deleted_files", deletedCount)
 		}

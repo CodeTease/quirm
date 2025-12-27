@@ -102,7 +102,10 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 		switch opts.Fit {
 		case "cover":
 			if opts.Focus == "smart" {
-				if err := img.ThumbnailWithSize(opts.Width, opts.Height, vips.InterestingEntropy, vips.SizeForce); err != nil {
+				// Use AI Detector if configured/available, else fallback to Entropy
+				// For now we instantiate a detector. In a real app, this should be a singleton injected.
+				detector := &AiDetector{}
+				if err := SmartCrop(img, opts.Width, opts.Height, detector); err != nil {
 					return nil, err
 				}
 			} else if opts.Focus == "face" {
@@ -249,7 +252,7 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 				if y < 0 {
 					y = 0
 				}
-				
+
 				if wmOpacity < 1.0 {
 					if err := wmVips.Linear([]float64{1, 1, 1, wmOpacity}, []float64{0, 0, 0, 0}); err != nil {
 						// ignore
@@ -314,12 +317,12 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 			thumb.Close()
 			return nil, err
 		}
-		
+
 		if err := thumb.ToColorSpace(vips.InterpretationSRGB); err != nil {
 			thumb.Close()
 			return nil, err
 		}
-		
+
 		pixels, err := thumb.ToBytes()
 		if err != nil {
 			thumb.Close()
@@ -327,7 +330,7 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 		}
 		w := thumb.Width()
 		h := thumb.Height()
-		bands := thumb.Bands() 
+		bands := thumb.Bands()
 		thumb.Close()
 
 		var imgObj image.Image
@@ -492,9 +495,9 @@ func ExtractPalette(r io.Reader) ([]string, error) {
 		if offset+bands > len(pixels) {
 			break
 		}
-		
+
 		var rVal, gVal, bVal uint8
-		
+
 		if bands >= 3 {
 			rVal = pixels[offset]
 			gVal = pixels[offset+1]
@@ -551,7 +554,7 @@ func applyEffects(img *vips.ImageRef, opts ImageOptions) error {
 			return err
 		}
 		// If it had alpha, ToColorSpace(BW) might drop it or handle it depending on implementation.
-		// vips usually handles it. If not, we might lose alpha. 
+		// vips usually handles it. If not, we might lose alpha.
 		// But for grayscale, usually fine.
 	}
 
@@ -560,7 +563,7 @@ func applyEffects(img *vips.ImageRef, opts ImageOptions) error {
 		// Standard Sepia Matrix
 		// R = tr*0.393 + tg*0.769 + tb*0.189 (Use slightly different standard values in code below)
 		// 0.3588, 0.7044, 0.1368
-		
+
 		var matrix []float64
 		if hasAlpha {
 			// 4x4 Identity for Alpha
@@ -568,7 +571,7 @@ func applyEffects(img *vips.ImageRef, opts ImageOptions) error {
 				0.3588, 0.7044, 0.1368, 0,
 				0.2990, 0.5870, 0.1140, 0,
 				0.2392, 0.4696, 0.0912, 0,
-				0,      0,      0,      1,
+				0, 0, 0, 1,
 			}
 		} else {
 			matrix = []float64{
@@ -577,7 +580,7 @@ func applyEffects(img *vips.ImageRef, opts ImageOptions) error {
 				0.2392, 0.4696, 0.0912,
 			}
 		}
-		
+
 		if err := img.Recomb(matrix); err != nil {
 			return err
 		}
@@ -587,7 +590,7 @@ func applyEffects(img *vips.ImageRef, opts ImageOptions) error {
 	if opts.Brightness != 0 {
 		// Linear: output = input * a + b
 		// Brightness is additive, so a=1, b=brightness
-		
+
 		var a, b []float64
 		if hasAlpha {
 			a = []float64{1, 1, 1, 1}
@@ -606,12 +609,12 @@ func applyEffects(img *vips.ImageRef, opts ImageOptions) error {
 	if opts.Contrast != 0 {
 		// Contrast is multiplicative around a pivot (usually 128)
 		// Formula: new = (old - 128) * contrast + 128
-		
+
 		c := opts.Contrast
 		// If c is exactly 1, do nothing
 		if c != 1.0 {
 			offset := 128.0 * (1.0 - c)
-			
+
 			var a, b []float64
 			if hasAlpha {
 				a = []float64{c, c, c, 1}

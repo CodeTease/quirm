@@ -189,7 +189,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		if country == "" {
 			country = r.Header.Get("X-Country-Code")
 		}
-		
+
 		if country != "" {
 			allowed := false
 			for _, c := range cfg.AllowedCountries {
@@ -274,7 +274,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && cfg.EnableVideoThumbnail)
+	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && (cfg.EnableVideoThumbnail || imgOpts.Format == "storyboard"))
 
 	cacheKey := ""
 	encodingType := "identity"
@@ -308,7 +308,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			metrics.CacheOpsTotal.WithLabelValues("hit_cache").Inc()
 			w.Header().Set("ETag", etag)
 			w.Header().Set("Cache-Control", "public, max-age=86400")
-			
+
 			// If blurhash, text/plain
 			if imgOpts.Blurhash {
 				w.Header().Set("Content-Type", "text/plain")
@@ -321,7 +321,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cacheFilePath := filepath.Join(h.CacheDir, cacheKey)
+	cacheFilePath := cache.GetCachePath(h.CacheDir, cacheKey)
 
 	// Check file existence and age
 	fileInfo, err := os.Stat(cacheFilePath)
@@ -348,7 +348,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			serveFile(w, cacheFilePath, encodingType, objectKey, imgOpts.Format)
 			return
 		}
-		
+
 		// File exists and is fresh
 		span.AddEvent("Disk Hit")
 		metrics.CacheOpsTotal.WithLabelValues("hit_disk").Inc()
@@ -440,7 +440,7 @@ func (h *Handler) handlePalette(w http.ResponseWriter, r *http.Request, objectKe
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	
+
 	data := res.([]byte)
 
 	// Save to Cache
@@ -486,6 +486,11 @@ func (h *Handler) fetchAndSave(ctx context.Context, objectKey, destPath, encodin
 	}
 	defer reader.Close()
 
+	// Ensure parent dir exists
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return nil, err
+	}
+
 	// We don't return bytes for fetchAndSave currently as we don't cache originals in Redis yet
 	// to avoid high memory/network usage for large files.
 	return nil, storage.AtomicWrite(destPath, reader, encodingType, h.CacheDir)
@@ -519,6 +524,11 @@ func (h *Handler) processAndSave(ctx context.Context, objectKey, destPath string
 	// Capture bytes BEFORE writing, as AtomicWrite drains the buffer
 	data := buf.Bytes()
 
+	// Ensure parent dir exists
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return nil, err
+	}
+
 	err = storage.AtomicWrite(destPath, bytes.NewReader(data), "identity", h.CacheDir)
 	if err != nil {
 		return nil, err
@@ -532,16 +542,16 @@ func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey 
 	// If params provided, we generate processed key.
 	// If no params, we might want to purge original? But usually we purge processed variants.
 	// If "all" param provided?
-	
+
 	// Implementation: Purge specific variant based on params
 	// Need to parse options to generate key properly
 	cfg := h.ConfigManager.Get()
 	imgOpts := parseImageOptions(params, cfg.Presets)
 	isImage := isImageFile(objectKey)
 	isVideo := isVideoFile(objectKey)
-	
+
 	shouldProcess := (isImage && (imgOpts.Width > 0 || imgOpts.Height > 0 || imgOpts.Fit != "" || imgOpts.Format != "" || imgOpts.Blurhash)) || (isVideo && cfg.EnableVideoThumbnail)
-	
+
 	var cacheKey string
 	if shouldProcess {
 		cacheKey = cache.GenerateKeyProcessed(objectKey, params, imgOpts.Format)
@@ -556,13 +566,13 @@ func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey 
 			slog.Warn("Failed to delete from cache provider", "key", cacheKey, "error", err)
 		}
 	}
-	
+
 	// Delete from Disk
-	cacheFilePath := filepath.Join(h.CacheDir, cacheKey)
+	cacheFilePath := cache.GetCachePath(h.CacheDir, cacheKey)
 	if err := os.Remove(cacheFilePath); err != nil && !os.IsNotExist(err) {
 		slog.Warn("Failed to delete from disk", "path", cacheFilePath, "error", err)
 	}
-	
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Purged"))
 }
@@ -570,12 +580,12 @@ func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey 
 func (h *Handler) processVideoAndSave(ctx context.Context, objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
 	// 1. Try to get Presigned URL
 	videoURL, err := h.S3.GetPresignedURL(ctx, objectKey, 15*time.Minute)
-	
+
 	// If getting presigned URL fails, or we decide to fallback (logic simplified here)
 	// We might fallback to download. But for now, if it's S3Client, it should support it.
 	// However, other providers might not.
 	// If error, we fallback to download mode.
-	
+
 	var inputPath string
 	var cleanup func()
 
@@ -616,7 +626,23 @@ func (h *Handler) processVideoAndSave(ctx context.Context, objectKey, destPath s
 	var buf *bytes.Buffer
 	var data []byte
 
-	if opts.Animated {
+	if opts.Format == "storyboard" {
+		// Storyboard generation
+		cols := 5
+		rows := 5
+		interval := "10"
+		// If "page" is set, treat it as interval in seconds? Or use a separate param?
+		// For now, let's respect the "page" param if present as interval for lack of a better field in ImageOptions.
+		if opts.Page > 0 {
+			interval = strconv.Itoa(opts.Page)
+		}
+
+		buf, err = processor.GenerateStoryboard(inputPath, interval, cols, rows, opts.Width)
+		if err != nil {
+			return nil, err
+		}
+		data = buf.Bytes()
+	} else if opts.Animated {
 		// Generate Animated Thumbnail (3 seconds)
 		// We respect requested Width/Height and Format if "webp" or "gif".
 		// If format is not specified or something else, default to GIF for animated requests unless it's WebP.
@@ -624,7 +650,7 @@ func (h *Handler) processVideoAndSave(ctx context.Context, objectKey, destPath s
 		if opts.Format == "webp" {
 			targetFormat = "webp"
 		}
-		
+
 		buf, err = processor.GenerateAnimatedThumbnail(inputPath, "3", opts.Width, opts.Height, targetFormat)
 		if err != nil {
 			return nil, err
@@ -645,7 +671,12 @@ func (h *Handler) processVideoAndSave(ctx context.Context, objectKey, destPath s
 		}
 		data = buf2.Bytes()
 	}
-	
+
+	// Ensure parent dir exists
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return nil, err
+	}
+
 	err = storage.AtomicWrite(destPath, bytes.NewReader(data), "identity", h.CacheDir)
 	if err != nil {
 		return nil, err
