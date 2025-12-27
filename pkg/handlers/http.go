@@ -7,7 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -43,7 +43,7 @@ func (rec *statusRecorder) WriteHeader(code int) {
 
 type Handler struct {
 	Config      config.Config
-	S3          *storage.S3Client
+	S3          storage.StorageProvider
 	WM          *watermark.Manager
 	Group       *singleflight.Group
 	CacheDir    string
@@ -362,9 +362,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		metrics.CacheOpsTotal.WithLabelValues("miss").Inc()
 
-		if h.Config.Debug {
-			log.Printf("[MISS] Processing: %s (Key: %s)", objectKey, cacheKey)
-		}
+		slog.Debug("Processing MISS", "objectKey", objectKey, "cacheKey", cacheKey)
 
 		if shouldProcess {
 			// Check if video
@@ -392,7 +390,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Not Found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error: %v", err)
+		slog.Error("Request processing failed", "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -424,8 +422,8 @@ func (h *Handler) processAndSave(objectKey, destPath string, opts processor.Imag
 
 	// Get watermark if configured
 	wmImg, wmOpacity, err := h.WM.Get()
-	if err != nil && h.Config.Debug {
-		log.Printf("Error loading watermark: %v", err)
+	if err != nil {
+		slog.Warn("Error loading watermark", "error", err)
 		// Continue without watermark? Or fail? The original code warned but continued.
 	}
 

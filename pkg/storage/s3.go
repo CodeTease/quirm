@@ -23,6 +23,9 @@ type S3Client struct {
 	bucket string
 }
 
+// Ensure S3Client implements StorageProvider
+var _ StorageProvider = (*S3Client)(nil)
+
 func NewS3Client(cfg appConfig.Config) (*S3Client, error) {
 	clientLogMode := aws.LogRequest
 	if !cfg.Debug {

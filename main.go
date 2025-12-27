@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -17,6 +17,7 @@ import (
 
 	"github.com/CodeTease/quirm/pkg/config"
 	"github.com/CodeTease/quirm/pkg/handlers"
+	"github.com/CodeTease/quirm/pkg/logger"
 	"github.com/CodeTease/quirm/pkg/metrics"
 	"github.com/CodeTease/quirm/pkg/processor"
 	"github.com/CodeTease/quirm/pkg/storage"
@@ -29,9 +30,11 @@ var (
 
 func main() {
 	cfg := config.LoadConfig()
+	logger.Init(cfg.Debug)
 
 	if cfg.S3Bucket == "" || cfg.S3AccessKey == "" || cfg.S3SecretKey == "" {
-		log.Fatal("Fatal: Missing required S3 configuration.")
+		slog.Error("Fatal: Missing required S3 configuration.")
+		os.Exit(1)
 	}
 
 	if _, err := os.Stat(cfg.CacheDir); os.IsNotExist(err) {
@@ -41,7 +44,7 @@ func main() {
 	// Initialize components
 	if cfg.FaceFinderPath != "" {
 		if err := processor.LoadCascade(cfg.FaceFinderPath); err != nil {
-			log.Printf("Warning: Failed to load facefinder cascade: %v. Face detection will be disabled.", err)
+			slog.Warn("Failed to load facefinder cascade. Face detection will be disabled.", "error", err)
 		}
 	}
 
@@ -51,7 +54,8 @@ func main() {
 
 	s3Client, err := storage.NewS3Client(cfg)
 	if err != nil {
-		log.Fatalf("Fatal: Failed to load AWS config: %v", err)
+		slog.Error("Fatal: Failed to load AWS config", "error", err)
+		os.Exit(1)
 	}
 
 	requestGroup := &singleflight.Group{}
@@ -81,6 +85,9 @@ func main() {
 	}
 
 	http.HandleFunc("/", h.HandleRequest)
-	fmt.Printf("Quirm v%s running on port %s\n", Version, cfg.Port)
-	log.Fatal(http.ListenAndServe(":"+cfg.Port, nil))
+	slog.Info("Quirm running", "version", Version, "port", cfg.Port)
+	if err := http.ListenAndServe(":"+cfg.Port, nil); err != nil {
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
+	}
 }

@@ -3,7 +3,7 @@ package cache
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -42,12 +42,10 @@ func StartCleaner(dir string, ttl, interval time.Duration, debug bool) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
-		if debug {
-			log.Println("[CLEANUP] Starting cache cleanup...")
-		}
+		slog.Debug("[CLEANUP] Starting cache cleanup...")
 		files, err := os.ReadDir(dir)
 		if err != nil {
-			log.Printf("[CLEANUP] Error reading dir: %v", err)
+			slog.Error("[CLEANUP] Error reading dir", "error", err)
 			continue
 		}
 		deletedCount := 0
@@ -63,8 +61,8 @@ func StartCleaner(dir string, ttl, interval time.Duration, debug bool) {
 				}
 			}
 		}
-		if debug && deletedCount > 0 {
-			log.Printf("[CLEANUP] Removed %d stale files.", deletedCount)
+		if deletedCount > 0 {
+			slog.Debug("[CLEANUP] Cleanup finished", "deleted_files", deletedCount)
 		}
 	}
 }

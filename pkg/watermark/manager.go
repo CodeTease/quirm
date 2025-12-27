@@ -2,7 +2,7 @@ package watermark
 
 import (
 	"image"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -54,9 +54,7 @@ func (m *Manager) Get() (image.Image, float64, error) {
 		return m.currentImg, m.opacity, nil
 	}
 
-	if m.debug {
-		log.Printf("Loading watermark from %s", m.path)
-	}
+	slog.Debug("Loading watermark", "path", m.path)
 
 	img, err := imaging.Open(m.path)
 	if err != nil {
