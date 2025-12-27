@@ -768,6 +768,23 @@ func parseImageOptions(params url.Values, presets map[string]string) processor.I
 		opts.TextSize, _ = strconv.ParseFloat(ts, 64)
 	}
 
+	// Effects
+	opts.Effect = params.Get("effect")
+	opts.Font = params.Get("font")
+
+	if b := params.Get("brightness"); b != "" {
+		if val, err := strconv.ParseFloat(b, 64); err == nil {
+			opts.Brightness = val
+		}
+	}
+
+	if c := params.Get("contrast"); c != "" {
+		if val, err := strconv.ParseFloat(c, 64); err == nil {
+			// Convert "20" -> 1.2
+			opts.Contrast = 1.0 + (val / 100.0)
+		}
+	}
+
 	// Check for blurhash
 	if bh := params.Get("blurhash"); bh == "true" || bh == "1" {
 		opts.Blurhash = true

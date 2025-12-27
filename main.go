@@ -34,6 +34,11 @@ var (
 )
 
 func main() {
+	// Setup fonts
+	if err := config.SetupFonts(); err != nil {
+		fmt.Printf("Warning: Failed to setup fonts: %v\n", err)
+	}
+
 	// Initialize libvips
 	vips.Startup(nil)
 	defer vips.Shutdown()

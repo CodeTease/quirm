@@ -42,6 +42,10 @@ type ImageOptions struct {
 	TextColor        string
 	TextSize         float64
 	TextOpacity      float64
+	Font             string
+	Effect           string
+	Brightness       float64
+	Contrast         float64
 	Blurhash         bool
 	SmartCompression bool
 	Animated         bool
@@ -226,6 +230,11 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 		}
 	}
 
+	// 2.5 Effects
+	if err := applyEffects(img, opts); err != nil {
+		return nil, err
+	}
+
 	// 3. Watermark (Image)
 	if wmImg != nil {
 		var wmBuf bytes.Buffer
@@ -263,10 +272,27 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 		if opts.TextColor == "" {
 			opts.TextColor = "red"
 		}
+		fontFamily := opts.Font
+		if fontFamily == "" {
+			fontFamily = "sans-serif"
+		} else {
+			// Sanitize Font Name: Allow only alphanumeric, space, hyphens, and underscores
+			// to prevent SVG injection.
+			safe := true
+			for _, r := range fontFamily {
+				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ' ' || r == '-' || r == '_') {
+					safe = false
+					break
+				}
+			}
+			if !safe {
+				fontFamily = "sans-serif"
+			}
+		}
 
 		svg := fmt.Sprintf(`<svg width="%d" height="%d">
-            <text x="50%%" y="50%%" font-family="sans-serif" font-size="%f" fill="%s" text-anchor="middle" dominant-baseline="middle" opacity="%f">%s</text>
-        </svg>`, img.Width(), img.Height(), opts.TextSize, opts.TextColor, 1.0, opts.Text)
+            <text x="50%%" y="50%%" font-family="%s" font-size="%f" fill="%s" text-anchor="middle" dominant-baseline="middle" opacity="%f">%s</text>
+        </svg>`, img.Width(), img.Height(), fontFamily, opts.TextSize, opts.TextColor, 1.0, opts.Text)
 
 		textImg, err := vips.NewImageFromBuffer([]byte(svg))
 		if err == nil {
@@ -514,4 +540,92 @@ func ExtractPalette(r io.Reader) ([]string, error) {
 	}
 
 	return result, nil
+}
+
+func applyEffects(img *vips.ImageRef, opts ImageOptions) error {
+	hasAlpha := img.HasAlpha()
+
+	// Effect: Grayscale
+	if opts.Effect == "grayscale" {
+		if err := img.ToColorSpace(vips.InterpretationBW); err != nil {
+			return err
+		}
+		// If it had alpha, ToColorSpace(BW) might drop it or handle it depending on implementation.
+		// vips usually handles it. If not, we might lose alpha. 
+		// But for grayscale, usually fine.
+	}
+
+	// Effect: Sepia
+	if opts.Effect == "sepia" {
+		// Standard Sepia Matrix
+		// R = tr*0.393 + tg*0.769 + tb*0.189 (Use slightly different standard values in code below)
+		// 0.3588, 0.7044, 0.1368
+		
+		var matrix []float64
+		if hasAlpha {
+			// 4x4 Identity for Alpha
+			matrix = []float64{
+				0.3588, 0.7044, 0.1368, 0,
+				0.2990, 0.5870, 0.1140, 0,
+				0.2392, 0.4696, 0.0912, 0,
+				0,      0,      0,      1,
+			}
+		} else {
+			matrix = []float64{
+				0.3588, 0.7044, 0.1368,
+				0.2990, 0.5870, 0.1140,
+				0.2392, 0.4696, 0.0912,
+			}
+		}
+		
+		if err := img.Recomb(matrix); err != nil {
+			return err
+		}
+	}
+
+	// Brightness
+	if opts.Brightness != 0 {
+		// Linear: output = input * a + b
+		// Brightness is additive, so a=1, b=brightness
+		
+		var a, b []float64
+		if hasAlpha {
+			a = []float64{1, 1, 1, 1}
+			b = []float64{opts.Brightness, opts.Brightness, opts.Brightness, 0}
+		} else {
+			a = []float64{1, 1, 1}
+			b = []float64{opts.Brightness, opts.Brightness, opts.Brightness}
+		}
+
+		if err := img.Linear(a, b); err != nil {
+			return err
+		}
+	}
+
+	// Contrast
+	if opts.Contrast != 0 {
+		// Contrast is multiplicative around a pivot (usually 128)
+		// Formula: new = (old - 128) * contrast + 128
+		
+		c := opts.Contrast
+		// If c is exactly 1, do nothing
+		if c != 1.0 {
+			offset := 128.0 * (1.0 - c)
+			
+			var a, b []float64
+			if hasAlpha {
+				a = []float64{c, c, c, 1}
+				b = []float64{offset, offset, offset, 0}
+			} else {
+				a = []float64{c, c, c}
+				b = []float64{offset, offset, offset}
+			}
+
+			if err := img.Linear(a, b); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
