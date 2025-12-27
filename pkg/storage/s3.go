@@ -19,9 +19,10 @@ import (
 )
 
 type S3Client struct {
-	client       *s3.Client
-	bucket       string
-	backupBucket string
+	client        *s3.Client
+	presignClient *s3.PresignClient
+	bucket        string
+	backupBucket  string
 }
 
 // Ensure S3Client implements StorageProvider
@@ -79,10 +80,13 @@ func NewS3Client(cfg appConfig.Config) (*S3Client, error) {
 		}
 	})
 
+	presignClient := s3.NewPresignClient(client)
+
 	return &S3Client{
-		client:       client,
-		bucket:       cfg.S3Bucket,
-		backupBucket: cfg.S3BackupBucket,
+		client:        client,
+		presignClient: presignClient,
+		bucket:        cfg.S3Bucket,
+		backupBucket:  cfg.S3BackupBucket,
 	}, nil
 }
 
@@ -141,4 +145,17 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 		contentLength = *resp.ContentLength
 	}
 	return resp.Body, contentLength, nil
+}
+
+func (s *S3Client) GetPresignedURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
+	request, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, func(o *s3.PresignOptions) {
+		o.Expires = expiry
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to presign request: %w", err)
+	}
+	return request.URL, nil
 }

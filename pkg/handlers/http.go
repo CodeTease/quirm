@@ -501,30 +501,48 @@ func (h *Handler) handlePurge(w http.ResponseWriter, r *http.Request, objectKey 
 }
 
 func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor.ImageOptions) ([]byte, error) {
-	// For video, we first need the video file locally.
-	// 1. Check if we have the video in cache? Or a temp file.
-	// Since cacheKey for video includes "processed" params, we don't have the original video cached by fetchAndSave usually.
-	// Unless we cache original video too.
-	// To support ffmpeg which needs a file path usually (or complex piping), let's download to a temp file.
+	// 1. Try to get Presigned URL
+	videoURL, err := h.S3.GetPresignedURL(context.TODO(), objectKey, 15*time.Minute)
+	
+	// If getting presigned URL fails, or we decide to fallback (logic simplified here)
+	// We might fallback to download. But for now, if it's S3Client, it should support it.
+	// However, other providers might not.
+	// If error, we fallback to download mode.
+	
+	var inputPath string
+	var cleanup func()
 
-	// Create temp file
-	tmpFile, err := os.CreateTemp(h.CacheDir, "video-*.tmp")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
+	if err == nil && videoURL != "" {
+		inputPath = videoURL
+		cleanup = func() {} // No cleanup needed for URL
+	} else {
+		// Fallback: Download to temp file
+		// Create temp file
+		tmpFile, err := os.CreateTemp(h.CacheDir, "video-*.tmp")
+		if err != nil {
+			return nil, err
+		}
+		// Register cleanup
+		cleanup = func() {
+			os.Remove(tmpFile.Name())
+			tmpFile.Close()
+		}
+		// Ensure cleanup happens if we return early (but we need it to persist for GenerateThumbnail)
+		// We defer cleanup at the end of function, which is fine since GenerateThumbnail is synchronous.
+		defer cleanup()
 
-	// Download video
-	reader, _, err := h.S3.GetObject(context.TODO(), objectKey)
-	if err != nil {
-		return nil, err
-	}
-	defer reader.Close()
+		// Download video
+		reader, _, err := h.S3.GetObject(context.TODO(), objectKey)
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
 
-	_, err = io.Copy(tmpFile, reader)
-	if err != nil {
-		return nil, err
+		_, err = io.Copy(tmpFile, reader)
+		if err != nil {
+			return nil, err
+		}
+		inputPath = tmpFile.Name()
 	}
 
 	// Generate Thumbnail
@@ -540,14 +558,14 @@ func (h *Handler) processVideoAndSave(objectKey, destPath string, opts processor
 			targetFormat = "webp"
 		}
 		
-		buf, err = processor.GenerateAnimatedThumbnail(tmpFile.Name(), "3", opts.Width, opts.Height, targetFormat)
+		buf, err = processor.GenerateAnimatedThumbnail(inputPath, "3", opts.Width, opts.Height, targetFormat)
 		if err != nil {
 			return nil, err
 		}
 		data = buf.Bytes()
 	} else {
 		// We use "00:00:01" as default timestamp if not provided via some param (not spec'd, so default)
-		buf, err = processor.GenerateThumbnail(tmpFile.Name(), "00:00:01")
+		buf, err = processor.GenerateThumbnail(inputPath, "00:00:01")
 		if err != nil {
 			return nil, err
 		}
@@ -691,6 +709,13 @@ func parseImageOptions(params url.Values, presets map[string]string) processor.I
 	// Check for animated
 	if anim := params.Get("animated"); anim == "true" || anim == "1" {
 		opts.Animated = true
+	}
+
+	// Parse Page
+	if p := params.Get("page"); p != "" {
+		if pageVal, err := strconv.Atoi(p); err == nil && pageVal > 0 {
+			opts.Page = pageVal
+		}
 	}
 
 	return opts

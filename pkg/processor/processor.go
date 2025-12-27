@@ -45,6 +45,7 @@ type ImageOptions struct {
 	Blurhash         bool
 	SmartCompression bool
 	Animated         bool
+	Page             int
 }
 
 // Process decodes, transforms, watermarks, and encodes the image.
@@ -55,7 +56,19 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 	}()
 
 	// 1. Decode
-	img, err := vips.NewImageFromReader(r)
+	// We read the full stream into memory to support LoadImageFromBuffer with options (e.g. Page)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		metrics.ImageProcessErrorsTotal.Inc()
+		return nil, fmt.Errorf("read error: %w", err)
+	}
+
+	importParams := vips.NewImportParams()
+	if opts.Page > 0 {
+		importParams.Page.Set(opts.Page - 1)
+	}
+
+	img, err := vips.LoadImageFromBuffer(data, importParams)
 	if err != nil {
 		metrics.ImageProcessErrorsTotal.Inc()
 		return nil, fmt.Errorf("decode error: %w", err)
@@ -387,17 +400,16 @@ func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]
 		ep.StripMetadata = stripMetadata
 		return img.ExportGIF(ep)
 	case "jxl":
-		// JXL Support via Generic Export or custom
-		// govips v2.16 might not have NewJxlExportParams yet.
-		// Using generic ExportParams.
-		ep := vips.NewDefaultExportParams()
-		ep.Format = vips.ImageTypeJXL
+		ep := vips.NewJxlExportParams()
 		ep.Quality = quality
-		ep.StripMetadata = stripMetadata
+		// For JXL, govips sets lossless if quality is 100 or default
+		if quality == 100 {
+			ep.Lossless = true
+		}
 		if smart {
 			ep.Effort = 7 // Higher effort
 		}
-		return img.Export(ep)
+		return img.ExportJxl(ep)
 	case "jpeg", "jpg":
 		ep := vips.NewJpegExportParams()
 		ep.Quality = quality
