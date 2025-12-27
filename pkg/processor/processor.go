@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	"image/jpeg"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,15 +12,8 @@ import (
 	"time"
 
 	"github.com/buckket/go-blurhash"
-	"github.com/chai2010/webp"
-	"github.com/disintegration/imaging"
+	"github.com/davidbyttow/govips/v2/vips"
 	pigo "github.com/esimov/pigo/core"
-	"github.com/fogleman/gg"
-	"github.com/gen2brain/avif"
-	"github.com/golang/freetype/truetype"
-	"github.com/muesli/smartcrop"
-	"github.com/muesli/smartcrop/nfnt"
-	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/CodeTease/quirm/pkg/metrics"
 )
@@ -28,7 +21,6 @@ import (
 var cascadeParams []byte
 
 // LoadCascade loads the pigo cascade file from the given path.
-// This should be called during application startup.
 func LoadCascade(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -39,21 +31,21 @@ func LoadCascade(path string) error {
 }
 
 type ImageOptions struct {
-	Width       int
-	Height      int
-	Fit         string // cover, contain, fill, inside
-	Format      string // jpeg, png, webp
-	Quality     int
-	Focus       string // smart, face
-	Text        string
-	TextColor   string
-	TextSize    float64
-	TextOpacity float64
-	Blurhash    bool
+	Width            int
+	Height           int
+	Fit              string // cover, contain, fill, inside
+	Format           string // jpeg, png, webp, jxl
+	Quality          int
+	Focus            string // smart, face
+	Text             string
+	TextColor        string
+	TextSize         float64
+	TextOpacity      float64
+	Blurhash         bool
+	SmartCompression bool
 }
 
 // Process decodes, transforms, watermarks, and encodes the image.
-// It returns a bytes.Buffer containing the processed image data.
 func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float64, originalKey string) (*bytes.Buffer, error) {
 	start := time.Now()
 	defer func() {
@@ -61,62 +53,50 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 	}()
 
 	// 1. Decode
-	img, err := imaging.Decode(r)
+	img, err := vips.NewImageFromReader(r)
 	if err != nil {
 		metrics.ImageProcessErrorsTotal.Inc()
 		return nil, fmt.Errorf("decode error: %w", err)
 	}
+	defer img.Close()
 
 	// 2. Transform
 	if opts.Width > 0 || opts.Height > 0 {
 		switch opts.Fit {
 		case "cover":
 			if opts.Focus == "smart" {
-				analyzer := smartcrop.NewAnalyzer(nfnt.NewDefaultResizer())
-				topCrop, err := analyzer.FindBestCrop(img, opts.Width, opts.Height)
-				if err == nil {
-					type SubImager interface {
-						SubImage(r image.Rectangle) image.Image
-					}
-					if simg, ok := img.(SubImager); ok {
-						img = simg.SubImage(topCrop)
-						img = imaging.Resize(img, opts.Width, opts.Height, imaging.Lanczos)
-					} else {
-						// Fallback if not subimager
-						img = imaging.Fill(img, opts.Width, opts.Height, imaging.Center, imaging.Lanczos)
-					}
-				} else {
-					// Fallback
-					img = imaging.Fill(img, opts.Width, opts.Height, imaging.Center, imaging.Lanczos)
+				if err := img.ThumbnailWithSize(opts.Width, opts.Height, vips.InterestingEntropy, vips.SizeForce); err != nil {
+					return nil, err
 				}
 			} else if opts.Focus == "face" {
 				if len(cascadeParams) > 0 {
-					// Convert to grayscale for pigo
-					gray := imaging.Grayscale(img)
-					cols, rows := gray.Bounds().Max.X, gray.Bounds().Max.Y
-					pixels := make([]uint8, cols*rows)
-					for y := 0; y < rows; y++ {
-						for x := 0; x < cols; x++ {
-							// imaging.Grayscale returns *image.NRGBA where R=G=B
-							// We can take any channel
-							c := gray.NRGBAAt(x, y)
-							pixels[y*cols+x] = c.R
-						}
+					detImg, err := img.Copy()
+					if err != nil {
+						return nil, err
 					}
 
+					if err := detImg.ToColorSpace(vips.InterpretationBW); err != nil {
+						detImg.Close()
+						return nil, err
+					}
+					pixels, err := detImg.ToBytes()
+					if err != nil {
+						detImg.Close()
+						return nil, err
+					}
+					cols := detImg.Width()
+					rows := detImg.Height()
+					detImg.Close()
+
 					cParams := pigo.NewPigo()
-					// Unpack returns *Pigo, error
 					classifier, err := cParams.Unpack(cascadeParams)
 					if err == nil {
-						// ImageParams for pigo
 						imgParams := pigo.ImageParams{
 							Pixels: pixels,
 							Rows:   rows,
 							Cols:   cols,
 							Dim:    cols,
 						}
-
-						// CascadeParams
 						cascade := pigo.CascadeParams{
 							MinSize:     20,
 							MaxSize:     1000,
@@ -125,12 +105,10 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 							ImageParams: imgParams,
 						}
 
-						// Run detection
-						dets := classifier.RunCascade(cascade, 0.0) // 0.0 angle
+						dets := classifier.RunCascade(cascade, 0.0)
 						dets = classifier.ClusterDetections(dets, 0.2)
 
 						if len(dets) > 0 {
-							// Find the largest face
 							var maxDet pigo.Detection
 							maxSize := 0
 							for _, det := range dets {
@@ -140,36 +118,24 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 								}
 							}
 
-							// Calculate crop area
-							// Center of face is maxDet.Col, maxDet.Row
-							// Size is maxDet.Scale
-							// We want to crop to opts.Width x opts.Height, centered on face
-
-							// NOTE: pigo returns row/col, which is y/x
 							faceX := maxDet.Col
 							faceY := maxDet.Row
 
-							// Calculate crop rectangle
-							// We want aspect ratio of opts.Width / opts.Height
 							targetRatio := float64(opts.Width) / float64(opts.Height)
 							srcRatio := float64(cols) / float64(rows)
 
 							var cropW, cropH int
 							if srcRatio > targetRatio {
-								// Source is wider, crop width
 								cropH = rows
 								cropW = int(float64(cropH) * targetRatio)
 							} else {
-								// Source is taller, crop height
 								cropW = cols
 								cropH = int(float64(cropW) / targetRatio)
 							}
 
-							// Center crop on face
 							x0 := faceX - cropW/2
 							y0 := faceY - cropH/2
 
-							// Clamp
 							if x0 < 0 {
 								x0 = 0
 							}
@@ -182,149 +148,245 @@ func Process(r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float6
 							if y0+cropH > rows {
 								y0 = rows - cropH
 							}
+							if err := img.ExtractArea(x0, y0, cropW, cropH); err != nil {
+								return nil, err
+							}
+							if err := img.Resize(float64(opts.Width)/float64(cropW), vips.KernelLanczos3); err != nil {
+								return nil, err
+							}
 
-							img = imaging.Crop(img, image.Rect(x0, y0, x0+cropW, y0+cropH))
-							img = imaging.Resize(img, opts.Width, opts.Height, imaging.Lanczos)
 						} else {
-							img = imaging.Fill(img, opts.Width, opts.Height, imaging.Center, imaging.Lanczos)
+							if err := img.ThumbnailWithSize(opts.Width, opts.Height, vips.InterestingCentre, vips.SizeForce); err != nil {
+								return nil, err
+							}
 						}
 					} else {
-						img = imaging.Fill(img, opts.Width, opts.Height, imaging.Center, imaging.Lanczos)
+						if err := img.ThumbnailWithSize(opts.Width, opts.Height, vips.InterestingCentre, vips.SizeForce); err != nil {
+							return nil, err
+						}
 					}
+
 				} else {
-					img = imaging.Fill(img, opts.Width, opts.Height, imaging.Center, imaging.Lanczos)
+					if err := img.ThumbnailWithSize(opts.Width, opts.Height, vips.InterestingCentre, vips.SizeForce); err != nil {
+						return nil, err
+					}
 				}
-				img = imaging.Fill(img, opts.Width, opts.Height, imaging.Center, imaging.Lanczos)
+			} else {
+				if err := img.ThumbnailWithSize(opts.Width, opts.Height, vips.InterestingCentre, vips.SizeForce); err != nil {
+					return nil, err
+				}
 			}
 		case "contain":
-			img = imaging.Fit(img, opts.Width, opts.Height, imaging.Lanczos)
-		default: // Resize
-			img = imaging.Resize(img, opts.Width, opts.Height, imaging.Lanczos)
+			scale := float64(opts.Width) / float64(img.Width())
+			scaleY := float64(opts.Height) / float64(img.Height())
+			if scaleY < scale {
+				scale = scaleY
+			}
+			if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
+				return nil, err
+			}
+
+		default:
+			if err := img.ResizeWithVScale(float64(opts.Width)/float64(img.Width()), float64(opts.Height)/float64(img.Height()), vips.KernelLanczos3); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	// 3. Watermark
+	// 3. Watermark (Image)
 	if wmImg != nil {
-		b := img.Bounds()
-		wb := wmImg.Bounds()
+		var wmBuf bytes.Buffer
+		if err := png.Encode(&wmBuf, wmImg); err == nil {
+			wmVips, err := vips.NewImageFromBuffer(wmBuf.Bytes())
+			if err == nil {
+				x := img.Width() - wmVips.Width() - 10
+				y := img.Height() - wmVips.Height() - 10
+				if x < 0 {
+					x = 0
+				}
+				if y < 0 {
+					y = 0
+				}
+				
+				if wmOpacity < 1.0 {
+					if err := wmVips.Linear([]float64{1, 1, 1, wmOpacity}, []float64{0, 0, 0, 0}); err != nil {
+						// ignore
+					}
+				}
 
-		offset := image.Pt(b.Max.X-wb.Max.X-10, b.Max.Y-wb.Max.Y-10)
-		if offset.X < 0 {
-			offset.X = 0
+				if err := img.Composite(wmVips, vips.BlendModeOver, x, y); err != nil {
+					// ignore
+				}
+				wmVips.Close()
+			}
 		}
-		if offset.Y < 0 {
-			offset.Y = 0
-		}
-
-		img = imaging.Overlay(img, wmImg, offset, wmOpacity)
 	}
 
-	// 3.5. Text Overlay
+	// 3.5 Text Overlay
 	if opts.Text != "" {
-		dc := gg.NewContextForImage(img)
 		if opts.TextSize == 0 {
 			opts.TextSize = 24
 		}
-
-		// Load font
-		font, err := truetype.Parse(goregular.TTF)
-		if err == nil {
-			face := truetype.NewFace(font, &truetype.Options{Size: opts.TextSize})
-			dc.SetFontFace(face)
-		}
-
-		// Set Color
-		// Default red if not specified (as per prompt example)
 		if opts.TextColor == "" {
 			opts.TextColor = "red"
 		}
 
-		// Map string color to hex or common names?
-		// gg.SetHexColor handles #RRGGBB
-		// gg.SetColor handles color.Color
-		// For simplicity, let's support basic names or assume hex if starts with #
-		switch strings.ToLower(opts.TextColor) {
-		case "red":
-			dc.SetRGB(1, 0, 0)
-		case "green":
-			dc.SetRGB(0, 1, 0)
-		case "blue":
-			dc.SetRGB(0, 0, 1)
-		case "white":
-			dc.SetRGB(1, 1, 1)
-		case "black":
-			dc.SetRGB(0, 0, 0)
-		default:
-			if strings.HasPrefix(opts.TextColor, "#") {
-				dc.SetHexColor(opts.TextColor)
-			} else {
-				dc.SetRGB(1, 0, 0) // Default Red
+		svg := fmt.Sprintf(`<svg width="%d" height="%d">
+            <text x="50%%" y="50%%" font-family="sans-serif" font-size="%f" fill="%s" text-anchor="middle" dominant-baseline="middle" opacity="%f">%s</text>
+        </svg>`, img.Width(), img.Height(), opts.TextSize, opts.TextColor, 1.0, opts.Text)
+
+		textImg, err := vips.NewImageFromBuffer([]byte(svg))
+		if err == nil {
+			if err := img.Composite(textImg, vips.BlendModeOver, 0, 0); err != nil {
+				fmt.Println("Text composite error:", err)
 			}
+			textImg.Close()
 		}
-
-		// Calculate position (Center for now)
-		w := float64(dc.Width())
-		h := float64(dc.Height())
-
-		dc.DrawStringAnchored(opts.Text, w/2, h/2, 0.5, 0.5)
-		img = dc.Image()
 	}
 
 	// 4. Encode
-	buf := new(bytes.Buffer)
-
+	// Handle Blurhash
 	if opts.Blurhash {
-		// Generate Blurhash
-		// We need to resize image to small size for blurhash generation speed (e.g. 32x32)
-		// But blurhash expects X and Y components. 4x3 is standard.
-		// Wait, Encode(img, x, y).
-		// We should probably resize the image down first to speed up encoding if it's large.
-		smallImg := imaging.Resize(img, 32, 32, imaging.Lanczos)
-		hash, err := blurhash.Encode(4, 3, smallImg)
+		thumb, err := img.Copy()
+		if err != nil {
+			return nil, err
+		}
+		if err := thumb.ThumbnailWithSize(32, 32, vips.InterestingCentre, vips.SizeForce); err != nil {
+			thumb.Close()
+			return nil, err
+		}
+		
+		if err := thumb.ToColorSpace(vips.InterpretationSRGB); err != nil {
+			thumb.Close()
+			return nil, err
+		}
+		
+		pixels, err := thumb.ToBytes()
+		if err != nil {
+			thumb.Close()
+			return nil, err
+		}
+		w := thumb.Width()
+		h := thumb.Height()
+		bands := thumb.Bands() 
+		thumb.Close()
+
+		var imgObj image.Image
+		if bands == 4 {
+			imgObj = &image.RGBA{
+				Pix:    pixels,
+				Stride: w * 4,
+				Rect:   image.Rect(0, 0, w, h),
+			}
+		} else if bands == 3 {
+			rgbaPixels := make([]uint8, w*h*4)
+			for i := 0; i < w*h; i++ {
+				rgbaPixels[i*4] = pixels[i*3]
+				rgbaPixels[i*4+1] = pixels[i*3+1]
+				rgbaPixels[i*4+2] = pixels[i*3+2]
+				rgbaPixels[i*4+3] = 255
+			}
+			imgObj = &image.RGBA{Pix: rgbaPixels, Stride: w * 4, Rect: image.Rect(0, 0, w, h)}
+		} else {
+			return nil, fmt.Errorf("unsupported bands for blurhash: %d", bands)
+		}
+
+		hash, err := blurhash.Encode(4, 3, imgObj)
 		if err != nil {
 			metrics.ImageProcessErrorsTotal.Inc()
 			return nil, err
 		}
-		buf.WriteString(hash)
-		return buf, nil
+		return bytes.NewBufferString(hash), nil
 	}
 
+	// Actual Encode
 	formatStr := strings.ToLower(opts.Format)
 	if formatStr == "" {
-		// Keep original format extension if possible, or default to JPEG
 		ext := strings.ToLower(filepath.Ext(originalKey))
 		if ext == ".png" {
 			formatStr = "png"
 		} else if ext == ".gif" {
 			formatStr = "gif"
+		} else if ext == ".webp" {
+			formatStr = "webp"
+		} else if ext == ".avif" {
+			formatStr = "avif"
+		} else if ext == ".jxl" {
+			formatStr = "jxl"
 		} else {
 			formatStr = "jpeg"
 		}
 	}
 
-	var encodeErr error
-	quality := opts.Quality
+	exportBytes, _, err := exportImage(img, formatStr, opts.Quality, opts.SmartCompression)
+	if err != nil {
+		metrics.ImageProcessErrorsTotal.Inc()
+		return nil, err
+	}
+
+	return bytes.NewBuffer(exportBytes), nil
+}
+
+func exportImage(img *vips.ImageRef, format string, quality int, smart bool) ([]byte, *vips.ImageMetadata, error) {
 	if quality == 0 {
 		quality = 80
 	}
 
-	switch formatStr {
+	switch format {
 	case "png":
-		encodeErr = imaging.Encode(buf, img, imaging.PNG)
-	case "gif":
-		encodeErr = imaging.Encode(buf, img, imaging.GIF)
+		ep := vips.NewPngExportParams()
+		ep.Quality = quality
+		ep.StripMetadata = true
+		if smart {
+			ep.Compression = 9 // Max compression
+		}
+		return img.ExportPng(ep)
 	case "webp":
-		encodeErr = webp.Encode(buf, img, &webp.Options{Quality: float32(quality)})
+		ep := vips.NewWebpExportParams()
+		ep.Quality = quality
+		ep.StripMetadata = true
+		if smart {
+			ep.ReductionEffort = 6
+		}
+		return img.ExportWebp(ep)
 	case "avif":
-		encodeErr = avif.Encode(buf, img, avif.Options{Quality: quality})
-	default: // jpeg
-		encodeErr = jpeg.Encode(buf, img, &jpeg.Options{Quality: quality})
+		ep := vips.NewAvifExportParams()
+		ep.Quality = quality
+		ep.StripMetadata = true
+		if smart {
+			ep.Speed = 0 // Slowest but best size
+		}
+		return img.ExportAvif(ep)
+	case "gif":
+		ep := vips.NewGifExportParams()
+		ep.Quality = quality
+		ep.StripMetadata = true
+		return img.ExportGIF(ep)
+	case "jxl":
+		// JXL Support via Generic Export or custom
+		// govips v2.16 might not have NewJxlExportParams yet.
+		// Using generic ExportParams.
+		ep := vips.NewDefaultExportParams()
+		ep.Format = vips.ImageTypeJXL
+		ep.Quality = quality
+		ep.StripMetadata = true
+		if smart {
+			ep.Effort = 7 // Higher effort
+		}
+		return img.Export(ep)
+	case "jpeg", "jpg":
+		ep := vips.NewJpegExportParams()
+		ep.Quality = quality
+		ep.StripMetadata = true
+		if smart {
+			ep.Interlace = true
+			ep.OptimizeCoding = true
+			ep.TrellisQuant = true
+		}
+		return img.ExportJpeg(ep)
+	default:
+		ep := vips.NewJpegExportParams()
+		ep.Quality = quality
+		return img.ExportJpeg(ep)
 	}
-
-	if encodeErr != nil {
-		metrics.ImageProcessErrorsTotal.Inc()
-		return nil, encodeErr
-	}
-
-	return buf, nil
 }

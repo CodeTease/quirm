@@ -22,6 +22,7 @@ import (
 	"github.com/CodeTease/quirm/pkg/processor"
 	"github.com/CodeTease/quirm/pkg/storage"
 	"github.com/CodeTease/quirm/pkg/watermark"
+	"github.com/davidbyttow/govips/v2/vips"
 )
 
 var (
@@ -29,6 +30,10 @@ var (
 )
 
 func main() {
+	// Initialize libvips
+	vips.Startup(nil)
+	defer vips.Shutdown()
+
 	cfg := config.LoadConfig()
 	logger.Init(cfg.Debug)
 
