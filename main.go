@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/sync/singleflight"
-	"golang.org/x/time/rate"
 
 	"github.com/CodeTease/quirm/pkg/cache"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -20,6 +20,7 @@ import (
 	"github.com/CodeTease/quirm/pkg/logger"
 	"github.com/CodeTease/quirm/pkg/metrics"
 	"github.com/CodeTease/quirm/pkg/processor"
+	"github.com/CodeTease/quirm/pkg/ratelimit"
 	"github.com/CodeTease/quirm/pkg/storage"
 	"github.com/CodeTease/quirm/pkg/watermark"
 	"github.com/davidbyttow/govips/v2/vips"
@@ -55,7 +56,13 @@ func main() {
 
 	wmManager := watermark.NewManager(cfg.WatermarkPath, cfg.WatermarkOpacity, cfg.Debug)
 
-	go cache.StartCleaner(cfg.CacheDir, cfg.CacheTTL, cfg.CleanupInterval, cfg.Debug)
+	// Hard TTL for cleaner is 7 days (or 7x CacheTTL if simpler, but user said "don't delete immediately")
+	// Let's use a reasonably long hard TTL like 7 days or 24 * CacheTTL
+	hardTTL := cfg.CacheTTL * 24
+	if hardTTL < 24*time.Hour {
+		hardTTL = 7 * 24 * time.Hour
+	}
+	go cache.StartCleaner(cfg.CacheDir, hardTTL, cfg.CleanupInterval, cfg.Debug)
 
 	s3Client, err := storage.NewS3Client(cfg)
 	if err != nil {
@@ -78,20 +85,41 @@ func main() {
 		slog.Info("Initialized Memory Cache")
 	}
 
-	h := &handlers.Handler{
-		Config:   cfg,
-		S3:       s3Client,
-		WM:       wmManager,
-		Group:    requestGroup,
-		CacheDir: cfg.CacheDir,
-		Cache:    cacheProvider,
+	// Initialize Rate Limiter
+	var limiter ratelimit.Limiter
+	if cfg.RateLimit > 0 {
+		if cfg.RedisAddr != "" {
+			limiter = ratelimit.NewRedisLimiter(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.RateLimit)
+			slog.Info("Initialized Redis Rate Limiter")
+		} else {
+			limiter = ratelimit.NewMemoryLimiter(cfg.RateLimit, 10000, time.Hour)
+			slog.Info("Initialized Memory Rate Limiter")
+		}
 	}
 
-	// Initialize ipLimiters map
-	// Use expirable LRU to avoid memory leak
-	// Size 10000, TTL 1 hour
-	ipLimiters := expirable.NewLRU[string, *rate.Limiter](10000, nil, time.Hour)
-	h.SetIPLimiters(ipLimiters)
+	// Compile AllowedDomains Regex
+	var allowedDomainsRegex []*regexp.Regexp
+	for _, d := range cfg.AllowedDomains {
+		if strings.HasPrefix(d, "^") {
+			re, err := regexp.Compile(d)
+			if err != nil {
+				slog.Error("Invalid regex in allowed domains", "regex", d, "error", err)
+				continue
+			}
+			allowedDomainsRegex = append(allowedDomainsRegex, re)
+		}
+	}
+
+	h := &handlers.Handler{
+		Config:              cfg,
+		S3:                  s3Client,
+		WM:                  wmManager,
+		Group:               requestGroup,
+		CacheDir:            cfg.CacheDir,
+		Cache:               cacheProvider,
+		Limiter:             limiter,
+		AllowedDomainsRegex: allowedDomainsRegex,
+	}
 
 	if cfg.EnableMetrics {
 		metrics.Init()

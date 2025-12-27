@@ -13,20 +13,20 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/sync/singleflight"
-	"golang.org/x/time/rate"
 
 	"github.com/CodeTease/quirm/pkg/cache"
 	"github.com/CodeTease/quirm/pkg/config"
 	"github.com/CodeTease/quirm/pkg/metrics"
 	"github.com/CodeTease/quirm/pkg/processor"
+	"github.com/CodeTease/quirm/pkg/ratelimit"
 	"github.com/CodeTease/quirm/pkg/storage"
 	"github.com/CodeTease/quirm/pkg/watermark"
 )
@@ -42,36 +42,15 @@ func (rec *statusRecorder) WriteHeader(code int) {
 }
 
 type Handler struct {
-	Config      config.Config
-	S3          storage.StorageProvider
-	WM          *watermark.Manager
-	Group       *singleflight.Group
-	CacheDir    string
-	Cache       cache.CacheProvider
-	Limiter     *rate.Limiter // unused if using ipLimiters
-	ipLimiters  *expirable.LRU[string, *rate.Limiter]
-	mu          sync.Mutex
-}
-
-func (h *Handler) SetIPLimiters(m *expirable.LRU[string, *rate.Limiter]) {
-	h.ipLimiters = m
-}
-
-func (h *Handler) getLimiter(ip string) *rate.Limiter {
-	// LRU is thread-safe for Get/Add, but we need to ensure atomic check-then-set if missing.
-	// expirable.LRU doesn't support GetOrAdd atomically out of the box (it has Get and Add).
-	// But it is fine to have a race condition where we create multiple limiters and overwrite.
-	// Rate Limiting is approximate anyway.
-
-	limiter, exists := h.ipLimiters.Get(ip)
-	if !exists {
-		// Create new limiter: rate limit from config, burst same as limit
-		limit := rate.Limit(h.Config.RateLimit)
-		limiter = rate.NewLimiter(limit, h.Config.RateLimit)
-		h.ipLimiters.Add(ip, limiter)
-	}
-
-	return limiter
+	Config              config.Config
+	S3                  storage.StorageProvider
+	WM                  *watermark.Manager
+	Group               *singleflight.Group
+	CacheDir            string
+	Cache               cache.CacheProvider
+	Limiter             ratelimit.Limiter
+	AllowedDomainsRegex []*regexp.Regexp
+	mu                  sync.Mutex
 }
 
 func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
@@ -109,10 +88,6 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		allowed := false
 
-		// If neither header is present, we might block or allow depending on strictness.
-		// Usually tools like curl don't send them.
-		// Assuming we only check if present or block if strictly required.
-		// Let's check if either matches any allowed domain.
 		check := func(val string) bool {
 			if val == "" {
 				return false
@@ -121,8 +96,18 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return false
 			}
+			// Check exact/wildcard domains first
 			for _, d := range h.Config.AllowedDomains {
-				if d == u.Host || d == "*" {
+				if d == "*" {
+					return true
+				}
+				if !strings.HasPrefix(d, "^") && d == u.Host {
+					return true
+				}
+			}
+			// Check Regex
+			for _, re := range h.AllowedDomainsRegex {
+				if re.MatchString(u.Host) {
 					return true
 				}
 			}
@@ -140,14 +125,7 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// If both empty, maybe allow? Or if config is set, strict mode?
-		// Let's assume if config is set, we enforce it on browsers (which send these).
-		// But for non-browsers...
-		// "không phải domain 'nhà mình' thì chặn luôn".
-		// If both are empty, it might be direct access.
 		if referer == "" && origin == "" {
-			// Allow direct access or block?
-			// Let's allow empty for now to not break curl/apps unless strictly specified.
 			allowed = true
 		}
 
@@ -155,6 +133,33 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Forbidden Domain", http.StatusForbidden)
 			return
 		}
+	}
+
+	// 0.2 Security: GeoIP
+	if len(h.Config.AllowedCountries) > 0 {
+		country := r.Header.Get("CF-IPCountry")
+		if country == "" {
+			country = r.Header.Get("X-Country-Code")
+		}
+		
+		if country != "" {
+			allowed := false
+			for _, c := range h.Config.AllowedCountries {
+				if strings.EqualFold(c, country) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				http.Error(w, "Forbidden Country", http.StatusForbidden)
+				return
+			}
+		}
+		// If header missing, we default allow or block? usually allow if not behind proxy, or assume strictly blocked?
+		// User said "chỉ cho phép IP Việt Nam chẳng hạn", implies restrictive.
+		// But without proxy headers we can't know. Let's assume we block if header IS present and doesn't match, 
+		// but if missing, we can't enforce (unless we mandate proxy usage).
+		// For safety, let's only block if we KNOW the country and it's wrong.
 	}
 
 	// 0.5 Security: Rate Limiting
@@ -165,9 +170,8 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		ip = host
 	}
 
-	if h.Config.RateLimit > 0 {
-		limiter := h.getLimiter(ip)
-		if !limiter.Allow() {
+	if h.Config.RateLimit > 0 && h.Limiter != nil {
+		if !h.Limiter.Allow(ip) {
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return
 		}
@@ -313,74 +317,43 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	fileInfo, err := os.Stat(cacheFilePath)
 	fileExists := err == nil
 
-	var serveStale bool
+	// Check if we should serve stale content
 	if fileExists {
+		// If file is older than CacheTTL, we serve it but trigger update
 		if time.Since(fileInfo.ModTime()) > h.Config.CacheTTL {
-			serveStale = true
+			// Trigger background update
+			go func() {
+				// Use singleflight to avoid stampede on update
+				_, _, _ = h.Group.Do(cacheKey, func() (interface{}, error) {
+					return h.updateCache(context.Background(), objectKey, cacheFilePath, cacheKey, imgOpts, encodingType, shouldProcess, isVideo)
+				})
+			}()
+
+			metrics.CacheOpsTotal.WithLabelValues("hit_stale").Inc()
+			// Serve the file
+			w.Header().Set("ETag", etag)
+			serveFile(w, cacheFilePath, encodingType, objectKey, imgOpts.Format)
+			return
 		}
-	}
-
-	if serveStale {
-		// Trigger background update
-		go func() {
-			// Use singleflight to avoid stampede on update
-			h.Group.Do(cacheKey, func() (interface{}, error) {
-				if shouldProcess {
-					data, err := h.processAndSave(objectKey, cacheFilePath, imgOpts)
-					if err == nil && h.Cache != nil && len(data) > 0 {
-						// Update cache
-						// processAndSave needs to return data
-						h.Cache.Set(context.TODO(), cacheKey, data, h.Config.CacheTTL)
-					}
-					return data, err
-				} else {
-					// fetchAndSave logic
-					return h.fetchAndSave(objectKey, cacheFilePath, encodingType)
-				}
-			})
-		}()
-
-		metrics.CacheOpsTotal.WithLabelValues("hit_stale").Inc()
-		// Serve the file
+		
+		// File exists and is fresh
+		metrics.CacheOpsTotal.WithLabelValues("hit_disk").Inc()
 		w.Header().Set("ETag", etag)
 		serveFile(w, cacheFilePath, encodingType, objectKey, imgOpts.Format)
-
-		// Also update Memory Cache with file content if not in memory?
-		// Reading file to memory might be expensive if big.
-		// Let's populate memory cache on fresh process only.
 		return
 	}
 
 	_, err, _ = h.Group.Do(cacheKey, func() (interface{}, error) {
+		// Double check inside singleflight
 		if storage.FileExists(cacheFilePath) {
+			// If it appeared while waiting
 			metrics.CacheOpsTotal.WithLabelValues("hit_disk").Inc()
-			// Populate memory cache?
-			// Maybe asynchronously or here if small enough.
 			return nil, nil
 		}
 		metrics.CacheOpsTotal.WithLabelValues("miss").Inc()
 
 		slog.Debug("Processing MISS", "objectKey", objectKey, "cacheKey", cacheKey)
-
-		if shouldProcess {
-			// Check if video
-			if isVideo && h.Config.EnableVideoThumbnail {
-				// Special video processing
-				data, err := h.processVideoAndSave(objectKey, cacheFilePath, imgOpts)
-				if err == nil && h.Cache != nil && len(data) > 0 {
-					h.Cache.Set(context.TODO(), cacheKey, data, h.Config.CacheTTL)
-				}
-				return data, err
-			}
-
-			data, err := h.processAndSave(objectKey, cacheFilePath, imgOpts)
-			if err == nil && h.Cache != nil && len(data) > 0 {
-				h.Cache.Set(context.TODO(), cacheKey, data, h.Config.CacheTTL)
-			}
-			return data, err
-		} else {
-			return h.fetchAndSave(objectKey, cacheFilePath, encodingType)
-		}
+		return h.updateCache(context.Background(), objectKey, cacheFilePath, cacheKey, imgOpts, encodingType, shouldProcess, isVideo)
 	})
 
 	if err != nil {
@@ -395,6 +368,25 @@ func (h *Handler) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("ETag", etag)
 	serveFile(w, cacheFilePath, encodingType, objectKey, imgOpts.Format)
+}
+
+func (h *Handler) updateCache(ctx context.Context, objectKey, destPath, cacheKey string, opts processor.ImageOptions, encodingType string, shouldProcess, isVideo bool) ([]byte, error) {
+	if shouldProcess {
+		if isVideo && h.Config.EnableVideoThumbnail {
+			data, err := h.processVideoAndSave(objectKey, destPath, opts)
+			if err == nil && h.Cache != nil && len(data) > 0 {
+				h.Cache.Set(ctx, cacheKey, data, h.Config.CacheTTL)
+			}
+			return data, err
+		}
+
+		data, err := h.processAndSave(objectKey, destPath, opts)
+		if err == nil && h.Cache != nil && len(data) > 0 {
+			h.Cache.Set(ctx, cacheKey, data, h.Config.CacheTTL)
+		}
+		return data, err
+	}
+	return h.fetchAndSave(objectKey, destPath, encodingType)
 }
 
 func (h *Handler) fetchAndSave(objectKey, destPath, encodingType string) ([]byte, error) {
@@ -546,6 +538,19 @@ func setContentType(w http.ResponseWriter, objectKey, forcedFormat string) {
 }
 
 func validateSignature(path string, params url.Values, secret string) bool {
+	// Check expiry first if present
+	if expiresStr := params.Get("expires"); expiresStr != "" {
+		expires, err := strconv.ParseInt(expiresStr, 10, 64)
+		if err == nil {
+			if time.Now().Unix() > expires {
+				return false
+			}
+		} else {
+			// Invalid expires format
+			return false
+		}
+	}
+
 	keys := make([]string, 0, len(params))
 	for k := range params {
 		if k == "s" {

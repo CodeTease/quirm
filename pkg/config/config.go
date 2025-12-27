@@ -30,8 +30,9 @@ type Config struct {
 	MaxImageSizeMB   int64
 	EnableMetrics    bool
 	// Security
-	AllowedDomains []string
-	RateLimit      int // Requests per second
+	AllowedDomains   []string
+	AllowedCountries []string
+	RateLimit        int // Requests per second
 	// Features
 	EnableVideoThumbnail bool
 	FaceFinderPath       string
@@ -68,6 +69,7 @@ func LoadConfig() Config {
 		MaxImageSizeMB:       int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
 		EnableMetrics:        getEnvBool("ENABLE_METRICS", false),
 		AllowedDomains:       getEnvSlice("ALLOWED_DOMAINS"),
+		AllowedCountries:     getEnvSlice("ALLOWED_COUNTRIES"),
 		RateLimit:            getEnvInt("RATE_LIMIT", 10),
 		EnableVideoThumbnail: getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
 		FaceFinderPath:       getEnv("FACE_FINDER_PATH", "facefinder"),

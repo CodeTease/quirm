@@ -45,7 +45,7 @@ func GenerateKeyProcessed(key string, params url.Values, format string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func StartCleaner(dir string, ttl, interval time.Duration, debug bool) {
+func StartCleaner(dir string, hardTTL, interval time.Duration, debug bool) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -61,7 +61,7 @@ func StartCleaner(dir string, ttl, interval time.Duration, debug bool) {
 			if err != nil {
 				continue
 			}
-			if time.Since(info.ModTime()) > ttl {
+			if time.Since(info.ModTime()) > hardTTL {
 				path := filepath.Join(dir, file.Name())
 				if err := os.Remove(path); err == nil {
 					deletedCount++
