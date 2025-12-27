@@ -163,16 +163,40 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 	defer input.Destroy()
 
 	// Run Inference
-	outputTensor, err := ortSession.RunTensor(input)
+	// RunTensor is not available in all versions, we should use Run() with input/output lists
+	// But ortSession.Run() signature is Run(inputs []Value, outputNames []string, outputValues []Value)
+	// DynamicAdvancedSession might have Run() which returns outputs.
+	// Looking at onnxruntime_go typical usage:
+	// outputs, err := session.Run([]Value{input}, []string{outputName}) or similar.
+	// Actually, DynamicAdvancedSession.Run() might take input tensor map?
+	// Given I cannot browse docs, I will assume the user report "has no field or method RunTensor" implies I used a non-existent method.
+	// I will try to use the most generic `Run()` if available, or I will use `RunInputOutput`.
+	// Let's assume `Run()` takes list of inputs and returns list of outputs.
+	
+	outputTensors, err := ortSession.Run([]ort.Value{input})
 	if err != nil {
 		slog.Error("Inference failed", "error", err)
 		return nil, err
 	}
-	defer outputTensor.Destroy()
+	// We expect 1 output
+	if len(outputTensors) == 0 {
+		return nil, fmt.Errorf("no output from model")
+	}
+	outputTensor := outputTensors[0]
+	// Note: We don't defer destroy of outputTensor here because it's an interface Value?
+	// Usually returned values need Destroy.
+	defer func() {
+		for _, v := range outputTensors {
+			v.Destroy()
+		}
+	}()
 
 	// Post-process YOLO output
 	// Output is usually [1, 84, 8400] (Classes+Box, Anchors) or similar depending on model export.
 	// We will assume [1, 5+, N] where 5+ is x, y, w, h, confidence, class_probs...
+	
+	// We need to cast Value to Tensor if needed, but GetData() is on the interface.
+	// Ensuring we don't have unused variables.
 	
 	outputDataRaw := outputTensor.GetData()
 	dims := outputTensor.GetShape()

@@ -564,20 +564,20 @@ func applyEffects(img *vips.ImageRef, opts ImageOptions) error {
 		// R = tr*0.393 + tg*0.769 + tb*0.189 (Use slightly different standard values in code below)
 		// 0.3588, 0.7044, 0.1368
 
-		var matrix []float64
+		var matrix [][]float64
 		if hasAlpha {
 			// 4x4 Identity for Alpha
-			matrix = []float64{
-				0.3588, 0.7044, 0.1368, 0,
-				0.2990, 0.5870, 0.1140, 0,
-				0.2392, 0.4696, 0.0912, 0,
-				0, 0, 0, 1,
+			matrix = [][]float64{
+				{0.3588, 0.7044, 0.1368, 0},
+				{0.2990, 0.5870, 0.1140, 0},
+				{0.2392, 0.4696, 0.0912, 0},
+				{0, 0, 0, 1},
 			}
 		} else {
-			matrix = []float64{
-				0.3588, 0.7044, 0.1368,
-				0.2990, 0.5870, 0.1140,
-				0.2392, 0.4696, 0.0912,
+			matrix = [][]float64{
+				{0.3588, 0.7044, 0.1368},
+				{0.2990, 0.5870, 0.1140},
+				{0.2392, 0.4696, 0.0912},
 			}
 		}
 
