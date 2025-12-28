@@ -39,3 +39,7 @@ func (c *RedisCache) Set(ctx context.Context, key string, value []byte, ttl time
 func (c *RedisCache) Delete(ctx context.Context, key string) error {
 	return c.client.Del(ctx, key).Err()
 }
+
+func (c *RedisCache) Health(ctx context.Context) error {
+	return c.client.Ping(ctx).Err()
+}

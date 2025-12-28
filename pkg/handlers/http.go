@@ -515,7 +515,7 @@ func (h *Handler) processAndSave(ctx context.Context, objectKey, destPath string
 		// Continue without watermark? Or fail? The original code warned but continued.
 	}
 
-	buf, err := processor.Process(reader, opts, wmImg, wmOpacity, objectKey)
+	buf, err := processor.Process(ctx, reader, opts, wmImg, wmOpacity, objectKey)
 	if err != nil {
 		return nil, err
 	}
@@ -665,7 +665,7 @@ func (h *Handler) processVideoAndSave(ctx context.Context, objectKey, destPath s
 
 		// Now we have the thumbnail image in buf (JPEG).
 		// Pipe it through Processor.Process to handle resizing/watermarking.
-		buf2, err := processor.Process(buf, opts, nil, 0, objectKey+".jpg") // Treat as jpg
+		buf2, err := processor.Process(ctx, buf, opts, nil, 0, objectKey+".jpg") // Treat as jpg
 		if err != nil {
 			return nil, err
 		}

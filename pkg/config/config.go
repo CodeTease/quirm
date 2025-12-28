@@ -83,6 +83,7 @@ type Config struct {
 	// Features
 	EnableVideoThumbnail bool
 	FaceFinderPath       string
+	AIModelPath          string
 	// Redis
 	RedisAddr     string
 	RedisPassword string
@@ -133,6 +134,7 @@ func LoadConfig() Config {
 		RateLimit:            getEnvInt("RATE_LIMIT", 10),
 		EnableVideoThumbnail: getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
 		FaceFinderPath:       getEnv("FACE_FINDER_PATH", "facefinder"),
+		AIModelPath:          os.Getenv("AI_MODEL_PATH"),
 		Presets:              getEnvMap("PRESETS"),
 		DefaultImagePath:     os.Getenv("DEFAULT_IMAGE_PATH"),
 	}

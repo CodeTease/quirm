@@ -16,6 +16,7 @@ type CacheProvider interface {
 	Get(ctx context.Context, key string) ([]byte, bool)
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
 	Delete(ctx context.Context, key string) error
+	Health(ctx context.Context) error
 }
 
 func GenerateKeyOriginal(key, encoding string) string {
@@ -82,10 +83,31 @@ func StartCleaner(dir string, hardTTL, interval time.Duration, debug bool) {
 		}
 
 		// Clean empty directories (optional, but good for sharding)
-		// We can do another pass or do it carefully. For now, we skip.
+		var dirs []string
+		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() && path != dir {
+				dirs = append(dirs, path)
+			}
+			return nil
+		})
 
-		if deletedCount > 0 {
-			slog.Debug("[CLEANUP] Cleanup finished", "deleted_files", deletedCount)
+		// Sort by length descending to delete deepest first
+		sort.Slice(dirs, func(i, j int) bool {
+			return len(dirs[i]) > len(dirs[j])
+		})
+
+		emptyDirsRemoved := 0
+		for _, d := range dirs {
+			if err := os.Remove(d); err == nil {
+				emptyDirsRemoved++
+			}
+		}
+
+		if deletedCount > 0 || emptyDirsRemoved > 0 {
+			slog.Debug("[CLEANUP] Cleanup finished", "deleted_files", deletedCount, "deleted_dirs", emptyDirsRemoved)
 		}
 	}
 }

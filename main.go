@@ -90,6 +90,13 @@ func main() {
 		}
 	}
 
+	if cfg.AIModelPath != "" {
+		if _, err := os.Stat(cfg.AIModelPath); err != nil {
+			slog.Error("Fatal: AI Model configured but file not found.", "path", cfg.AIModelPath, "error", err)
+			os.Exit(1)
+		}
+	}
+
 	wmManager := watermark.NewManager(cfg.WatermarkPath, cfg.WatermarkOpacity, cfg.Debug)
 
 	// Hard TTL for cleaner is 7 days (or 7x CacheTTL if simpler, but user said "don't delete immediately")
@@ -166,6 +173,41 @@ func main() {
 	}
 
 	http.HandleFunc("/", h.HandleRequest)
+
+	// Health Check
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		status := "ok"
+		statusCode := http.StatusOK
+		details := make(map[string]string)
+
+		// Check S3
+		if err := s3Client.Health(ctx); err != nil {
+			status = "error"
+			statusCode = http.StatusServiceUnavailable
+			details["s3"] = err.Error()
+			slog.Error("Health check failed: S3", "error", err)
+		} else {
+			details["s3"] = "ok"
+		}
+
+		// Check Cache (Redis if configured)
+		if err := cacheProvider.Health(ctx); err != nil {
+			status = "error"
+			statusCode = http.StatusServiceUnavailable
+			details["cache"] = err.Error()
+			slog.Error("Health check failed: Cache", "error", err)
+		} else {
+			details["cache"] = "ok"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		fmt.Fprintf(w, `{"status": "%s", "details": %v}`, status, detailsToString(details))
+	})
+
 	slog.Info("Quirm running", "version", Version, "port", cfg.Port)
 	if err := http.ListenAndServe(":"+cfg.Port, nil); err != nil {
 		slog.Error("Server failed", "error", err)

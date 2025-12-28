@@ -101,3 +101,7 @@ func (c *MemoryCache) Delete(ctx context.Context, key string) error {
 	c.cache.Del(key)
 	return nil
 }
+
+func (c *MemoryCache) Health(ctx context.Context) error {
+	return nil
+}

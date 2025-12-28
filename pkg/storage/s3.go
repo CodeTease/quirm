@@ -16,6 +16,7 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"go.opentelemetry.io/otel"
 
 	appConfig "github.com/CodeTease/quirm/pkg/config"
 	"github.com/CodeTease/quirm/pkg/metrics"
@@ -94,6 +95,10 @@ func NewS3Client(cfg appConfig.Config) (*S3Client, error) {
 }
 
 func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	tracer := otel.Tracer("quirm/storage")
+	ctx, span := tracer.Start(ctx, "S3.GetObject")
+	defer span.End()
+
 	start := time.Now()
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -148,6 +153,13 @@ func (s *S3Client) GetPresignedURL(ctx context.Context, key string, expiry time.
 		return "", fmt.Errorf("failed to presign request: %w", err)
 	}
 	return request.URL, nil
+}
+
+func (s *S3Client) Health(ctx context.Context) error {
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(s.bucket),
+	})
+	return err
 }
 
 func shouldFailover(err error) bool {
