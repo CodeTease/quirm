@@ -1,15 +1,57 @@
 package config
 
 import (
+	"encoding/json"
+	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
+// Manager holds the current configuration and manages reloads
+type Manager struct {
+	config Config
+	mu     sync.RWMutex
+}
+
+// NewManager creates a new configuration manager
+func NewManager() *Manager {
+	return &Manager{
+		config: LoadConfig(),
+	}
+}
+
+// Get returns a copy of the current configuration
+func (m *Manager) Get() Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config
+}
+
+// Reload reloads the configuration from environment variables
+func (m *Manager) Reload() error {
+	// Overload will overwrite existing env vars with values from .env
+	if err := godotenv.Overload(); err != nil {
+		// It's okay if .env doesn't exist, we just reload from OS env
+	}
+
+	newConfig := LoadConfig()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config = newConfig
+	return nil
+}
+
 // Config holds application configuration
 type Config struct {
+	// Features
+	Presets          map[string]string
+	DefaultImagePath string
+
 	S3Endpoint        string
 	S3Region          string
 	S3Bucket          string
@@ -23,6 +65,9 @@ type Config struct {
 	CacheTTL          time.Duration
 	CleanupInterval   time.Duration
 	Debug             bool
+	// Memory Cache
+	MemoryCacheSize       int
+	MemoryCacheLimitBytes int64
 	// New Configs
 	SecretKey        string
 	WatermarkPath    string
@@ -30,11 +75,15 @@ type Config struct {
 	MaxImageSizeMB   int64
 	EnableMetrics    bool
 	// Security
-	AllowedDomains []string
-	RateLimit      int // Requests per second
+	AllowedDomains   []string
+	AllowedCIDRs     []string     // Added for IP Allowlist
+	AllowedCIDRNets  []*net.IPNet // Added for IP Allowlist optimization
+	AllowedCountries []string
+	RateLimit        int // Requests per second
 	// Features
 	EnableVideoThumbnail bool
 	FaceFinderPath       string
+	AIModelPath          string
 	// Redis
 	RedisAddr     string
 	RedisPassword string
@@ -45,36 +94,65 @@ type Config struct {
 func LoadConfig() Config {
 	godotenv.Load()
 
+	allowedCIDRs := getEnvSlice("ALLOWED_CIDRS")
+	var allowedCIDRNets []*net.IPNet
+	for _, cidr := range allowedCIDRs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			allowedCIDRNets = append(allowedCIDRNets, ipNet)
+		}
+	}
+
 	return Config{
-		RedisAddr:            os.Getenv("REDIS_ADDR"),
-		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
-		RedisDB:              getEnvInt("REDIS_DB", 0),
-		S3Endpoint:           os.Getenv("S3_ENDPOINT"),
-		S3Region:             getEnv("S3_REGION", "auto"),
-		S3Bucket:             os.Getenv("S3_BUCKET"),
-		S3BackupBucket:       os.Getenv("S3_BACKUP_BUCKET"),
-		S3AccessKey:          os.Getenv("S3_ACCESS_KEY"),
-		S3SecretKey:          os.Getenv("S3_SECRET_KEY"),
-		S3ForcePathStyle:     getEnvBool("S3_FORCE_PATH_STYLE", false),
-		S3UseCustomDomain:    getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
-		Port:                 getEnv("PORT", "8080"),
-		CacheDir:             getEnv("CACHE_DIR", "./cache_data"),
-		CacheTTL:             time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
-		CleanupInterval:      time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
-		Debug:                getEnvBool("DEBUG", false),
-		SecretKey:            os.Getenv("SECRET_KEY"),
-		WatermarkPath:        os.Getenv("WATERMARK_PATH"),
-		WatermarkOpacity:     getEnvFloat("WATERMARK_OPACITY", 0.5),
-		MaxImageSizeMB:       int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
-		EnableMetrics:        getEnvBool("ENABLE_METRICS", false),
-		AllowedDomains:       getEnvSlice("ALLOWED_DOMAINS"),
-		RateLimit:            getEnvInt("RATE_LIMIT", 10),
-		EnableVideoThumbnail: getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
-		FaceFinderPath:       getEnv("FACE_FINDER_PATH", "facefinder"),
+		RedisAddr:             os.Getenv("REDIS_ADDR"),
+		RedisPassword:         os.Getenv("REDIS_PASSWORD"),
+		RedisDB:               getEnvInt("REDIS_DB", 0),
+		S3Endpoint:            os.Getenv("S3_ENDPOINT"),
+		S3Region:              getEnv("S3_REGION", "auto"),
+		S3Bucket:              os.Getenv("S3_BUCKET"),
+		S3BackupBucket:        os.Getenv("S3_BACKUP_BUCKET"),
+		S3AccessKey:           os.Getenv("S3_ACCESS_KEY"),
+		S3SecretKey:           os.Getenv("S3_SECRET_KEY"),
+		S3ForcePathStyle:      getEnvBool("S3_FORCE_PATH_STYLE", false),
+		S3UseCustomDomain:     getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
+		Port:                  getEnv("PORT", "8080"),
+		CacheDir:              getEnv("CACHE_DIR", "./cache_data"),
+		CacheTTL:              time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
+		CleanupInterval:       time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
+		Debug:                 getEnvBool("DEBUG", false),
+		MemoryCacheSize:       getEnvInt("MEMORY_CACHE_SIZE", 100),
+		MemoryCacheLimitBytes: int64(getEnvInt("MEMORY_CACHE_LIMIT_BYTES", 0)),
+		SecretKey:             os.Getenv("SECRET_KEY"),
+		WatermarkPath:         os.Getenv("WATERMARK_PATH"),
+		WatermarkOpacity:      getEnvFloat("WATERMARK_OPACITY", 0.5),
+		MaxImageSizeMB:        int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
+		EnableMetrics:         getEnvBool("ENABLE_METRICS", false),
+		AllowedDomains:        getEnvSlice("ALLOWED_DOMAINS"),
+		AllowedCIDRs:          allowedCIDRs,
+		AllowedCIDRNets:       allowedCIDRNets,
+		AllowedCountries:      getEnvSlice("ALLOWED_COUNTRIES"),
+		RateLimit:             getEnvInt("RATE_LIMIT", 10),
+		EnableVideoThumbnail:  getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
+		FaceFinderPath:        getEnv("FACE_FINDER_PATH", "facefinder"),
+		AIModelPath:           os.Getenv("AI_MODEL_PATH"),
+		Presets:               getEnvMap("PRESETS"),
+		DefaultImagePath:      getEnv("DEFAULT_IMAGE_PATH", "./assets/Teaserverse_icon.png"),
 	}
 }
 
 // Helpers
+func getEnvMap(key string) map[string]string {
+	val := os.Getenv(key)
+	if val == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(val), &m); err != nil {
+		return nil
+	}
+	return m
+}
+
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value

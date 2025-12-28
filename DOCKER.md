@@ -53,17 +53,29 @@ docker run -d \
 | `S3_ACCESS_KEY` | Your S3 Access Key. | |
 | `S3_SECRET_KEY` | Your S3 Secret Key. | |
 | `S3_REGION` | S3 Region. | `auto` |
+| `S3_BACKUP_BUCKET` | Optional failover bucket. | |
+| `S3_FORCE_PATH_STYLE` | Set to `true` for MinIO/LocalStack. | `false` |
 | `PORT` | The port the application runs on. | `8080` |
+| `DEFAULT_IMAGE_PATH` | Local fallback image path. | |
 | `CACHE_TTL_HOURS` | Cache Time-To-Live in hours. | `24` |
+| `MEMORY_CACHE_SIZE` | L1 Cache item count. | `100` |
+| `MEMORY_CACHE_LIMIT_BYTES` | L1 Cache size limit. | `0` (unlimited) |
 | `WATERMARK_PATH` | Path to the watermark image inside the container. | |
 | `WATERMARK_OPACITY` | Opacity of the watermark (0.0 - 1.0). | `0.5` |
 | `MAX_IMAGE_SIZE_MB` | Max input image size in MB. | `20` |
 | `SECRET_KEY` | Secret key for HMAC signature validation. | |
 | `ENABLE_METRICS` | Enable Prometheus metrics (`true` or `false`). | `false` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`| OpenTelemetry Collector URL. | |
 | `ALLOWED_DOMAINS` | Whitelist domains (comma-separated). | |
+| `ALLOWED_CIDRS` | Trusted CIDRs (comma-separated). | |
 | `RATE_LIMIT` | Requests per second per IP. | `10` |
+| `REDIS_ADDR` | Redis address for rate limiting/cache. | |
+| `REDIS_PASSWORD` | Redis password. | |
+| `REDIS_DB` | Redis DB index. | `0` |
 | `ENABLE_VIDEO_THUMBNAIL` | Enable video processing (requires ffmpeg). | `false` |
 | `FACE_FINDER_PATH` | Path to face detection cascade file. | `./facefinder` |
+| `AI_MODEL_PATH` | Path to custom ONNX model. | |
+| `PRESETS` | JSON map for named presets. | |
 
 ## Advanced Usage
 

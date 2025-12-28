@@ -59,3 +59,11 @@ func (c *TieredCache) Delete(ctx context.Context, key string) error {
 	}
 	return nil
 }
+
+func (c *TieredCache) Health(ctx context.Context) error {
+	// Check L2 if available, as L1 is memory and usually safe
+	if c.L2 != nil {
+		return c.L2.Health(ctx)
+	}
+	return c.L1.Health(ctx)
+}

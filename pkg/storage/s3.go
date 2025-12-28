@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -11,17 +13,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"go.opentelemetry.io/otel"
 
 	appConfig "github.com/CodeTease/quirm/pkg/config"
 	"github.com/CodeTease/quirm/pkg/metrics"
 )
 
 type S3Client struct {
-	client       *s3.Client
-	bucket       string
-	backupBucket string
+	client        *s3.Client
+	presignClient *s3.PresignClient
+	bucket        string
+	backupBucket  string
 }
 
 // Ensure S3Client implements StorageProvider
@@ -79,14 +84,21 @@ func NewS3Client(cfg appConfig.Config) (*S3Client, error) {
 		}
 	})
 
+	presignClient := s3.NewPresignClient(client)
+
 	return &S3Client{
-		client:       client,
-		bucket:       cfg.S3Bucket,
-		backupBucket: cfg.S3BackupBucket,
+		client:        client,
+		presignClient: presignClient,
+		bucket:        cfg.S3Bucket,
+		backupBucket:  cfg.S3BackupBucket,
 	}, nil
 }
 
 func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	tracer := otel.Tracer("quirm/storage")
+	ctx, span := tracer.Start(ctx, "S3.GetObject")
+	defer span.End()
+
 	start := time.Now()
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -94,16 +106,7 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 	})
 	if err != nil {
 		// Failover Logic
-		if s.backupBucket != "" {
-			// Check if error is NoSuchKey or equivalent
-			// AWS SDK v2 errors are checked differently.
-			// Simplified: We assume almost any error on GET except context cancel might be worth trying backup?
-			// But spec says "If bucket fails or file not found".
-			// So let's try backup.
-			
-			// We could log here
-			// slog.Info("Primary bucket fetch failed, trying backup", "error", err, "bucket", s.backupBucket)
-			
+		if s.backupBucket != "" && shouldFailover(err) {
 			respBackup, errBackup := s.client.GetObject(ctx, &s3.GetObjectInput{
 				Bucket: aws.String(s.backupBucket),
 				Key:    aws.String(key),
@@ -116,10 +119,6 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 				}
 				return respBackup.Body, contentLength, nil
 			}
-			// If backup fails, return ORIGINAL error usually, or backup error?
-			// Typically original error is more relevant if both fail, unless backup error is "found but ..."
-			// Let's return the original error to keep semantics, or maybe wrapping?
-			// But if backup also 404s, returning original 404 is fine.
 		}
 
 		return nil, 0, err
@@ -141,4 +140,54 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 		contentLength = *resp.ContentLength
 	}
 	return resp.Body, contentLength, nil
+}
+
+func (s *S3Client) GetPresignedURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
+	request, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, func(o *s3.PresignOptions) {
+		o.Expires = expiry
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to presign request: %w", err)
+	}
+	return request.URL, nil
+}
+
+func (s *S3Client) Health(ctx context.Context) error {
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(s.bucket),
+	})
+	return err
+}
+
+func shouldFailover(err error) bool {
+	// 1. Check specific API error codes (e.g. "NoSuchKey")
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		if code == "NoSuchKey" || code == "NotFound" {
+			return true
+		}
+	}
+
+	// 2. Check HTTP Status Codes via ResponseError
+	var respErr *smithyhttp.ResponseError
+	if errors.As(err, &respErr) {
+		status := respErr.Response.StatusCode
+		if status == http.StatusNotFound || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests {
+			return true
+		}
+		if status >= 500 {
+			return true
+		}
+		// Client error (4xx) that isn't 404/408/429 -> Do NOT failover
+		if status >= 400 && status < 500 {
+			return false
+		}
+	}
+
+	// 3. Generic/Network errors -> Failover as safety net
+	return true
 }
