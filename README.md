@@ -64,6 +64,8 @@ Quirm supports image manipulation via query parameters.
 * `color`: Text color (name or hex). Default: `red`.
 * `ts`: Text size.
 * `blurhash`: Set to `true` or `1` to return the Blurhash string of the image (content-type `text/plain`).
+* `palette`: Set to `true` to return the top 5 dominant colors (JSON).
+* `page`: Select specific page/frame for multi-page formats (PDF/GIF).
 * `s`: URL Signature (Required if `SECRET_KEY` is set).
 
 **Examples:**
@@ -78,9 +80,23 @@ Quirm supports image manipulation via query parameters.
   `/images/photo.jpg?blurhash=true`
 * **Video Thumbnail:**
   `/videos/intro.mp4?w=300` (Requires `ENABLE_VIDEO_THUMBNAIL=true`)
+* **Palette Extraction:**
+  `/images/design.png?palette=true`
+* **PDF Page Render:**
+  `/docs/manual.pdf?page=1&w=600`
 
 ### Auto-Format (AVIF/WebP)
 If the client sends `Accept: image/avif` or `Accept: image/webp` header (most modern browsers), and no specific format is requested in the URL, Quirm automatically converts the image to the best available format (AVIF > WebP > Original) for optimal compression.
+
+### Named Presets
+You can define named presets in your environment via the `PRESETS` variable (JSON map) to simplify URLs and enforce specific transformations.
+
+Example `PRESETS='{"avatar": {"w": 200, "h": 200, "fit": "cover", "focus": "face"}}'`
+
+Usage: `/images/profile.jpg?preset=avatar`
+
+### Custom Fonts
+To use custom fonts in text overlays, mount your font files (e.g., `.ttf`, `.otf`) to `assets/fonts` inside the container/working directory. Quirm will automatically detect and register them on startup.
 
 ### Security: URL Signatures
 To prevent resource exhaustion attacks (DDoS) via infinite resize combinations, you should set a `SECRET_KEY` in your `.env`.
@@ -107,7 +123,15 @@ Configuration is handled via environment variables in the `.env` file:
 * `S3_BUCKET`: The name of the bucket.
 * `S3_REGION`: Bucket region.
 * `S3_ACCESS_KEY` / `S3_SECRET_KEY`: API Credentials.
+* `S3_BACKUP_BUCKET`: Optional failover bucket for 404/5xx errors.
+* `S3_FORCE_PATH_STYLE`: Set to `true` for MinIO/LocalStack.
 * `PORT`: Server port (Default: `8080`).
+* `DEFAULT_IMAGE_PATH`: Path to a local fallback image if the requested key is not found.
+
+**Redis (Rate Limiting & Clustering):**
+* `REDIS_ADDR`: Redis address (e.g., `localhost:6379`). Supports comma-separated list for Cluster/Sentinel.
+* `REDIS_PASSWORD`: Redis password.
+* `REDIS_DB`: Redis DB index (Default: `0`).
 
 **Image Processing:**
 * `SECRET_KEY`: Secret string for validating URL signatures (Recommended for production).
@@ -119,23 +143,43 @@ Configuration is handled via environment variables in the `.env` file:
 
 **Security & Advanced:**
 * `ALLOWED_DOMAINS`: Comma-separated list of allowed domains for Referer/Origin checks.
+* `ALLOWED_CIDRS`: Comma-separated list of trusted CIDRs (e.g., `10.0.0.0/8`).
 * `RATE_LIMIT`: Requests per second limit per IP. Default: `10`.
 * `ENABLE_VIDEO_THUMBNAIL`: Enable video thumbnail generation (Requires `ffmpeg`). Default: `false`.
+* `PRESETS`: JSON map of named presets (e.g., `{"thumb": {"w": 100}}`).
+* `AI_MODEL_PATH`: Path to ONNX model for smart crop (Default uses internal logic if unset).
+* `AI_MODEL_INPUT_NAME` / `AI_MODEL_OUTPUT_NAME`: Custom ONNX graph node names.
 
 **Cache:**
 * `CACHE_DIR`: Directory for cache files.
 * `CACHE_TTL_HOURS`: Cache expiration time in hours.
 * `CLEANUP_INTERVAL_MINS`: How often to run garbage collection.
+* `MEMORY_CACHE_SIZE`: Number of items in L1 memory cache (Default: `100`).
+* `MEMORY_CACHE_LIMIT_BYTES`: Max memory usage for L1 cache in bytes.
+
+## Operations
+
+### Health Check
+A health check endpoint is available at: `GET /health`
+It checks connectivity to S3 and Redis (if configured).
+
+### Configuration Hot Reload
+Quirm supports hot-reloading configuration without downtime. Send a `SIGHUP` signal to the process to reload environment variables.
+
+`kill -SIGHUP <pid>`
 
 ## Observability
 
-Quirm supports Prometheus metrics for monitoring performance and health.
+Quirm supports Prometheus metrics and OpenTelemetry tracing.
 
 **Enable Metrics:**
 Set `ENABLE_METRICS=true` in your environment.
 
 **Endpoint:**
 `GET /metrics`
+
+**OpenTelemetry:**
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector URL to enable distributed tracing.
 
 **Available Metrics:**
 * **HTTP:**

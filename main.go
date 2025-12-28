@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -205,7 +206,8 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
-		fmt.Fprintf(w, `{"status": "%s", "details": %v}`, status, detailsToString(details))
+		detailsJSON, _ := json.Marshal(details)
+		fmt.Fprintf(w, `{"status": "%s", "details": %s}`, status, string(detailsJSON))
 	})
 
 	slog.Info("Quirm running", "version", Version, "port", cfg.Port)
