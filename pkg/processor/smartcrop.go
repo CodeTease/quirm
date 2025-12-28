@@ -173,23 +173,21 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 	// I will try to use the most generic `Run()` if available, or I will use `RunInputOutput`.
 	// Let's assume `Run()` takes list of inputs and returns list of outputs.
 	
-	outputTensors, err := ortSession.Run([]ort.Value{input})
+	// Output is usually [1, 84, 8400] (Classes+Box, Anchors) or similar depending on model export.
+	// We will assume [1, 5+, N] where 5+ is x, y, w, h, confidence, class_probs...
+	outputShape := ort.NewShape(1, 84, 8400)
+	outputDataBuf := make([]float32, 1*84*8400)
+	outputTensor, err := ort.NewTensor(outputShape, outputDataBuf)
+	if err != nil {
+		return nil, err
+	}
+	defer outputTensor.Destroy()
+
+	err = ortSession.Run([]ort.Value{input}, []ort.Value{outputTensor})
 	if err != nil {
 		slog.Error("Inference failed", "error", err)
 		return nil, err
 	}
-	// We expect 1 output
-	if len(outputTensors) == 0 {
-		return nil, fmt.Errorf("no output from model")
-	}
-	outputTensor := outputTensors[0]
-	// Note: We don't defer destroy of outputTensor here because it's an interface Value?
-	// Usually returned values need Destroy.
-	defer func() {
-		for _, v := range outputTensors {
-			v.Destroy()
-		}
-	}()
 
 	// Post-process YOLO output
 	// Output is usually [1, 84, 8400] (Classes+Box, Anchors) or similar depending on model export.
