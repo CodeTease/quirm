@@ -302,9 +302,14 @@ func Process(ctx context.Context, r io.Reader, opts ImageOptions, wmImg image.Im
 			}
 		}
 
+		textOpacity := opts.TextOpacity
+		if textOpacity == 0 {
+			textOpacity = 1.0
+		}
+
 		svg := fmt.Sprintf(`<svg width="%d" height="%d">
-            <text x="50%%" y="50%%" font-family="%s" font-size="%f" fill="%s" text-anchor="middle" dominant-baseline="middle" opacity="%f">%s</text>
-        </svg>`, img.Width(), img.Height(), fontFamily, opts.TextSize, opts.TextColor, 1.0, opts.Text)
+			<text x="50%%" y="50%%" font-family="%s" font-size="%f" fill="%s" text-anchor="middle" dominant-baseline="middle" opacity="%f">%s</text>
+		</svg>`, img.Width(), img.Height(), fontFamily, opts.TextSize, opts.TextColor, textOpacity, opts.Text)
 
 		textImg, err := vips.NewImageFromBuffer([]byte(svg))
 		if err == nil {

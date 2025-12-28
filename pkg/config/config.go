@@ -39,7 +39,7 @@ func (m *Manager) Reload() error {
 	}
 
 	newConfig := LoadConfig()
-	
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.config = newConfig
@@ -104,18 +104,18 @@ func LoadConfig() Config {
 	}
 
 	return Config{
-		RedisAddr:            os.Getenv("REDIS_ADDR"),
-		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
-		RedisDB:              getEnvInt("REDIS_DB", 0),
-		S3Endpoint:           os.Getenv("S3_ENDPOINT"),
-		S3Region:             getEnv("S3_REGION", "auto"),
-		S3Bucket:             os.Getenv("S3_BUCKET"),
-		S3BackupBucket:       os.Getenv("S3_BACKUP_BUCKET"),
-		S3AccessKey:          os.Getenv("S3_ACCESS_KEY"),
-		S3SecretKey:          os.Getenv("S3_SECRET_KEY"),
-		S3ForcePathStyle:     getEnvBool("S3_FORCE_PATH_STYLE", false),
-		S3UseCustomDomain:    getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
-		Port:                 getEnv("PORT", "8080"),
+		RedisAddr:             os.Getenv("REDIS_ADDR"),
+		RedisPassword:         os.Getenv("REDIS_PASSWORD"),
+		RedisDB:               getEnvInt("REDIS_DB", 0),
+		S3Endpoint:            os.Getenv("S3_ENDPOINT"),
+		S3Region:              getEnv("S3_REGION", "auto"),
+		S3Bucket:              os.Getenv("S3_BUCKET"),
+		S3BackupBucket:        os.Getenv("S3_BACKUP_BUCKET"),
+		S3AccessKey:           os.Getenv("S3_ACCESS_KEY"),
+		S3SecretKey:           os.Getenv("S3_SECRET_KEY"),
+		S3ForcePathStyle:      getEnvBool("S3_FORCE_PATH_STYLE", false),
+		S3UseCustomDomain:     getEnvBool("S3_USE_CUSTOM_DOMAIN", false),
+		Port:                  getEnv("PORT", "8080"),
 		CacheDir:              getEnv("CACHE_DIR", "./cache_data"),
 		CacheTTL:              time.Duration(getEnvInt("CACHE_TTL_HOURS", 24)) * time.Hour,
 		CleanupInterval:       time.Duration(getEnvInt("CLEANUP_INTERVAL_MINS", 60)) * time.Minute,
@@ -123,20 +123,20 @@ func LoadConfig() Config {
 		MemoryCacheSize:       getEnvInt("MEMORY_CACHE_SIZE", 100),
 		MemoryCacheLimitBytes: int64(getEnvInt("MEMORY_CACHE_LIMIT_BYTES", 0)),
 		SecretKey:             os.Getenv("SECRET_KEY"),
-		WatermarkPath:        os.Getenv("WATERMARK_PATH"),
-		WatermarkOpacity:     getEnvFloat("WATERMARK_OPACITY", 0.5),
-		MaxImageSizeMB:       int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
-		EnableMetrics:        getEnvBool("ENABLE_METRICS", false),
-		AllowedDomains:       getEnvSlice("ALLOWED_DOMAINS"),
-		AllowedCIDRs:         allowedCIDRs,
-		AllowedCIDRNets:      allowedCIDRNets,
-		AllowedCountries:     getEnvSlice("ALLOWED_COUNTRIES"),
-		RateLimit:            getEnvInt("RATE_LIMIT", 10),
-		EnableVideoThumbnail: getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
-		FaceFinderPath:       getEnv("FACE_FINDER_PATH", "facefinder"),
-		AIModelPath:          os.Getenv("AI_MODEL_PATH"),
-		Presets:              getEnvMap("PRESETS"),
-		DefaultImagePath:     os.Getenv("DEFAULT_IMAGE_PATH"),
+		WatermarkPath:         os.Getenv("WATERMARK_PATH"),
+		WatermarkOpacity:      getEnvFloat("WATERMARK_OPACITY", 0.5),
+		MaxImageSizeMB:        int64(getEnvInt("MAX_IMAGE_SIZE_MB", 20)),
+		EnableMetrics:         getEnvBool("ENABLE_METRICS", false),
+		AllowedDomains:        getEnvSlice("ALLOWED_DOMAINS"),
+		AllowedCIDRs:          allowedCIDRs,
+		AllowedCIDRNets:       allowedCIDRNets,
+		AllowedCountries:      getEnvSlice("ALLOWED_COUNTRIES"),
+		RateLimit:             getEnvInt("RATE_LIMIT", 10),
+		EnableVideoThumbnail:  getEnvBool("ENABLE_VIDEO_THUMBNAIL", false),
+		FaceFinderPath:        getEnv("FACE_FINDER_PATH", "facefinder"),
+		AIModelPath:           os.Getenv("AI_MODEL_PATH"),
+		Presets:               getEnvMap("PRESETS"),
+		DefaultImagePath:      getEnv("DEFAULT_IMAGE_PATH", "./assets/Teaserverse_icon.png"),
 	}
 }
 
