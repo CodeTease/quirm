@@ -196,17 +196,10 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 	// We need to cast Value to Tensor if needed, but GetData() is on the interface.
 	// Ensuring we don't have unused variables.
 	
-	outputDataRaw := outputTensor.GetData()
+	outputData := outputTensor.GetData()
 	dims := outputTensor.GetShape()
-	
-	if len(dims) < 3 {
-		return nil, nil
-	}
 
-	// Type assertion
-	outputData, ok := outputDataRaw.([]float32)
-	if !ok {
-		slog.Error("Unexpected tensor data type", "type", fmt.Sprintf("%T", outputDataRaw))
+	if len(dims) < 3 {
 		return nil, nil
 	}
 	
