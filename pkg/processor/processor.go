@@ -58,8 +58,6 @@ type ImageOptions struct {
 // Note: We cannot easily pass context here without changing the signature, but typically Process is called from HandleRequest
 // which has a context. Ideally Process should take context. For now we use Background if we can't change signature,
 // BUT looking at where Process is called, it might be inside HandleRequest which likely has context.
-// Wait, the user prompt said "Gắn thêm Span vào ... processor.Process".
-// I need to change the signature of Process to accept context.Context.
 func Process(ctx context.Context, r io.Reader, opts ImageOptions, wmImg image.Image, wmOpacity float64, originalKey string) (*bytes.Buffer, error) {
 	tracer := otel.Tracer("quirm/processor")
 	ctx, span := tracer.Start(ctx, "Processor.Process")

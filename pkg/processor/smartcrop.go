@@ -51,7 +51,7 @@ func initORT(modelPath string) error {
 			ortError = fmt.Errorf("failed to initialize onnx environment: %w", err)
 			return
 		}
-		
+
 		if _, err := os.Stat(modelPath); err != nil {
 			ortError = fmt.Errorf("model not found at %s", modelPath)
 			return
@@ -98,7 +98,7 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 		slog.Debug("AI Detector init failed", "error", err)
 		return nil, nil
 	}
-	
+
 	if ortSession == nil {
 		return nil, nil
 	}
@@ -118,7 +118,7 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 	if err := inputImg.ToColorSpace(vips.InterpretationSRGB); err != nil {
 		return nil, err
 	}
-	
+
 	// Ensure 3 bands (Flatten alpha if present)
 	if inputImg.Bands() > 3 {
 		white := &vips.Color{R: 255, G: 255, B: 255}
@@ -144,15 +144,15 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 	// Vips export is R G B R G B...
 	// YOLO needs RRR... GGG... BBB... (Planar)
 	// And normalized 0.0-1.0
-	
+
 	for i := 0; i < width*height; i++ {
 		r := float32(data[i*3]) / 255.0
 		g := float32(data[i*3+1]) / 255.0
 		b := float32(data[i*3+2]) / 255.0
 
 		inputTensorData[i] = r
-		inputTensorData[width*height + i] = g
-		inputTensorData[2*width*height + i] = b
+		inputTensorData[width*height+i] = g
+		inputTensorData[2*width*height+i] = b
 	}
 
 	inputShape := ort.NewShape(1, 3, 640, 640)
@@ -162,17 +162,6 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 	}
 	defer input.Destroy()
 
-	// Run Inference
-	// RunTensor is not available in all versions, we should use Run() with input/output lists
-	// But ortSession.Run() signature is Run(inputs []Value, outputNames []string, outputValues []Value)
-	// DynamicAdvancedSession might have Run() which returns outputs.
-	// Looking at onnxruntime_go typical usage:
-	// outputs, err := session.Run([]Value{input}, []string{outputName}) or similar.
-	// Actually, DynamicAdvancedSession.Run() might take input tensor map?
-	// Given I cannot browse docs, I will assume the user report "has no field or method RunTensor" implies I used a non-existent method.
-	// I will try to use the most generic `Run()` if available, or I will use `RunInputOutput`.
-	// Let's assume `Run()` takes list of inputs and returns list of outputs.
-	
 	// Output is usually [1, 84, 8400] (Classes+Box, Anchors) or similar depending on model export.
 	// We will assume [1, 5+, N] where 5+ is x, y, w, h, confidence, class_probs...
 	outputShape := ort.NewShape(1, 84, 8400)
@@ -192,27 +181,27 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 	// Post-process YOLO output
 	// Output is usually [1, 84, 8400] (Classes+Box, Anchors) or similar depending on model export.
 	// We will assume [1, 5+, N] where 5+ is x, y, w, h, confidence, class_probs...
-	
+
 	// We need to cast Value to Tensor if needed, but GetData() is on the interface.
 	// Ensuring we don't have unused variables.
-	
+
 	outputData := outputTensor.GetData()
 	dims := outputTensor.GetShape()
 
 	if len(dims) < 3 {
 		return nil, nil
 	}
-	
+
 	// Simply find the anchor with highest objectness/class probability
 	// For YOLOv8: [Batch, 4+Classes, Anchors] -> [1, 84, 8400] (80 classes)
 	// 0: x center, 1: y center, 2: width, 3: height, 4..: class probs
-	
+
 	channels := int(dims[1]) // 84
 	anchors := int(dims[2])  // 8400
-	
+
 	var bestConf float32 = 0.0
 	var bestIdx int = -1
-	
+
 	// Iterate over anchors
 	for i := 0; i < anchors; i++ {
 		// Find max class probability for this anchor
@@ -221,58 +210,58 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 			// Check bounds
 			idx := c*anchors + i
 			if idx >= len(outputData) {
-				break 
+				break
 			}
-			conf := outputData[idx] 
+			conf := outputData[idx]
 			// Wait, if shape is [1, 84, 8400], it is contiguous in last dim?
 			// Usually data layout in C array: [batch][channel][anchor]
 			// So index = c * anchors + i
-			
+
 			if conf > maxClassConf {
 				maxClassConf = conf
 			}
 		}
-		
+
 		if maxClassConf > bestConf {
 			bestConf = maxClassConf
 			bestIdx = i
 		}
 	}
-	
+
 	if bestConf > 0.4 && bestIdx != -1 { // Threshold 0.4
 		// Decode box
-		cx := outputData[0*anchors + bestIdx]
-		cy := outputData[1*anchors + bestIdx]
-		w  := outputData[2*anchors + bestIdx]
-		h  := outputData[3*anchors + bestIdx]
-		
+		cx := outputData[0*anchors+bestIdx]
+		cy := outputData[1*anchors+bestIdx]
+		w := outputData[2*anchors+bestIdx]
+		h := outputData[3*anchors+bestIdx]
+
 		// Coordinates are relative to 640x640
 		// Convert to original image coordinates
-		
+
 		origW := float32(img.Width())
 		origH := float32(img.Height())
-		
+
 		scaleX := origW / 640.0
 		scaleY := origH / 640.0
-		
+
 		// Box center and size in original image
 		boxX := (cx - w/2) * scaleX
 		boxY := (cy - h/2) * scaleY
 		boxW := w * scaleX
 		boxH := h * scaleY
-		
+
 		rect := image.Rect(
 			int(boxX), int(boxY),
-			int(boxX + boxW), int(boxY + boxH),
+			int(boxX+boxW), int(boxY+boxH),
 		)
-		
+
 		// Clamp
 		rect = rect.Intersect(image.Rect(0, 0, int(origW), int(origH)))
-		
+
 		slog.Info("AI Smart Crop found object", "conf", bestConf, "rect", rect)
 		return &rect, nil
 	}
-	
+
 	runtime.KeepAlive(outputData)
 	return nil, nil
 }
@@ -281,7 +270,7 @@ func (d *AiDetector) Detect(img *vips.ImageRef) (*image.Rectangle, error) {
 func SmartCrop(img *vips.ImageRef, width, height int, detector ObjectDetector) error {
 	// If detector returns a specific rect, we crop to it.
 	// If not (nil), we use vips built-in Entropy.
-	
+
 	if detector != nil {
 		rect, err := detector.Detect(img)
 		if err == nil && rect != nil {

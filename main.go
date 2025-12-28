@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	Version = "0.4.0"
+	Version = "0.5.0"
 )
 
 func main() {
@@ -100,8 +100,6 @@ func main() {
 
 	wmManager := watermark.NewManager(cfg.WatermarkPath, cfg.WatermarkOpacity, cfg.Debug)
 
-	// Hard TTL for cleaner is 7 days (or 7x CacheTTL if simpler, but user said "don't delete immediately")
-	// Let's use a reasonably long hard TTL like 7 days or 24 * CacheTTL
 	hardTTL := cfg.CacheTTL * 24
 	if hardTTL < 24*time.Hour {
 		hardTTL = 7 * 24 * time.Hour

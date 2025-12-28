@@ -196,5 +196,3 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector URL to enable distributed tr
 ## License
 
 This project is under the **MIT License**.
-
-> **BETA STAGE**
