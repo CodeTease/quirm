@@ -63,6 +63,9 @@ Quirm supports image manipulation via query parameters.
 * `text`: Text to overlay on the image.
 * `color`: Text color (name or hex). Default: `red`.
 * `ts`: Text size.
+* `effect`: Apply effects: `grayscale`, `sepia`.
+* `brightness`: Adjust brightness (e.g., `0.5` adds brightness).
+* `contrast`: Adjust contrast (e.g., `20` increases contrast by 20%).
 * `blurhash`: Set to `true` or `1` to return the Blurhash string of the image (content-type `text/plain`).
 * `palette`: Set to `true` to return the top 5 dominant colors (JSON).
 * `page`: Select specific page/frame for multi-page formats (PDF/GIF).
@@ -144,6 +147,7 @@ Configuration is handled via environment variables in the `.env` file:
 **Security & Advanced:**
 * `ALLOWED_DOMAINS`: Comma-separated list of allowed domains for Referer/Origin checks.
 * `ALLOWED_CIDRS`: Comma-separated list of trusted CIDRs (e.g., `10.0.0.0/8`).
+* `ALLOWED_COUNTRIES`: Comma-separated list of allowed ISO country codes (e.g., `US,VN`). Requires `CF-IPCountry` or `X-Country-Code` header from your proxy.
 * `RATE_LIMIT`: Requests per second limit per IP. Default: `10`.
 * `ENABLE_VIDEO_THUMBNAIL`: Enable video thumbnail generation (Requires `ffmpeg`). Default: `false`.
 * `PRESETS`: JSON map of named presets (e.g., `{"thumb": {"w": 100}}`).
@@ -162,6 +166,12 @@ Configuration is handled via environment variables in the `.env` file:
 ### Health Check
 A health check endpoint is available at: `GET /health`
 It checks connectivity to S3 and Redis (if configured).
+
+### Cache Purging
+You can purge a specific file from the cache (both memory and disk) by sending a `DELETE` request to the image URL.
+If `SECRET_KEY` is enabled, the request must include a valid signature.
+
+`DELETE /images/photo.jpg?w=200`
 
 ### Configuration Hot Reload
 Quirm supports hot-reloading configuration without downtime. Send a `SIGHUP` signal to the process to reload environment variables.
