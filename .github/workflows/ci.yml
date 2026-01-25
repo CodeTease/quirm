@@ -31,6 +31,9 @@ jobs:
     - name: Test
       run: go test -v ./...
 
+    - name: Run Integration Tests
+      run: bash tests/integration_test.sh
+
   docker:
     name: Docker Build and Test
     runs-on: ubuntu-latest
