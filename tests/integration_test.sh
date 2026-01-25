@@ -33,8 +33,8 @@ if [ ! -f "quirm" ]; then
         
         # Verify helpers compile
         log "Compiling helpers..."
-        go build -o tests/mock_s3 tests/mock_s3.go
-        go build -o tests/sign_url tests/sign_url.go
+        go build -o tests/mock_s3 tests/mock_s3/main.go
+        go build -o tests/sign_url tests/sign_url/main.go
         
         if [ -f "tests/mock_s3" ] && [ -f "tests/sign_url" ]; then
             log "Helpers compiled successfully."
@@ -60,8 +60,8 @@ fi
 cp "$TEST_IMG" "$FALLBACK_IMG"
 
 # Compile helpers
-go build -o tests/mock_s3 tests/mock_s3.go
-go build -o tests/sign_url tests/sign_url.go
+go build -o tests/mock_s3 tests/mock_s3/main.go
+go build -o tests/sign_url tests/sign_url/main.go
 
 # Create .env for testing
 cat > tests/.env.test <<EOF
