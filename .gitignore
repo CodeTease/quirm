@@ -37,12 +37,19 @@ cache_data/
 # Application
 quirm
 
-# Vegh files (CodeTease's Snapshot Tool)
+# Vegh Snapshot Tool. A CodeTease project
 *.vegh
 # Vegh cache folder
 .veghcache/
 # PyVegh's Vegh Hooks (Optional)
-.veghhooks.json
-# Old Vegh files extension, kept for backward compatibility
-*.snap 
-# Not a branding: Get PyVegh in https://pypi.org/project/pyvegh/ (probably just `pip install pyvegh`)
+# .veghhooks.json
+
+# Pavidi Task Runner. A CodeTease project
+.p/
+# Test binaries and artifacts
+tests/mock_s3_bin
+tests/sign_url_bin
+tests/test_image.jpg
+tests/fallback.jpg
+tests/cache/
+tests/.env.test

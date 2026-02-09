@@ -22,13 +22,6 @@ func NewMemoryCache(size int, limitBytes int64, defaultTTL time.Duration) *Memor
 	if limitBytes > 0 {
 		// Capacity-based limit
 		maxCost = limitBytes
-		// NumCounters should be approx 10x the number of items.
-		// Since we don't know the item count, we assume an average item size.
-		// Let's assume average 50KB image/data size as a heuristic? 
-		// Or just set a safe high number. Ristretto counters are small (4 bits).
-		// 100MB cache -> 2000 items (50KB each). 10x -> 20,000 counters.
-		// If limitBytes is small (10MB), 200 items.
-		// Let's estimate avg item size 10KB to be safe?
 		estimatedItems := limitBytes / 10240 
 		if estimatedItems < 100 {
 			estimatedItems = 100
@@ -69,9 +62,6 @@ func NewMemoryCache(size int, limitBytes int64, defaultTTL time.Duration) *Memor
 
 	cache, err := ristretto.NewCache(config)
 	if err != nil {
-		// Fallback or panic? A panic here means bad config usually.
-		// Given startup phase, panic is acceptable or return nil/log fatal.
-		// We'll panic to be noticed immediately.
 		panic(err)
 	}
 
