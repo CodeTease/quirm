@@ -124,15 +124,6 @@ func (s *S3Client) GetObject(ctx context.Context, key string) (io.ReadCloser, in
 		return nil, 0, err
 	}
 
-	// Only record metric if configured (implicit check: if metrics initialized)
-	// We can check appConfig, but here we don't have it easily accessible unless stored.
-	// However, prometheus metrics are global and safe to call even if not scraped,
-	// unless we want to avoid the overhead.
-	// Given the instructions, we should just record it.
-	// But wait, the plan said "Optional".
-	// The metrics variables are global. If we record them, they just update in memory.
-	// If /metrics is not exposed, no one sees them. That's fine.
-	// The overhead is minimal.
 	metrics.S3FetchDuration.Observe(time.Since(start).Seconds())
 
 	var contentLength int64

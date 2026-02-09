@@ -258,15 +258,6 @@ fi
 
 # 4.2 Hot Reload
 log "Testing Hot Reload..."
-# We will change allowed countries to BLOCK everything (empty list or invalid)
-# and see if previous valid request fails.
-# Edit .env.test (Note: config manager reloads from .env file? No, code says os.Environ OR .env overload.
-# Quirm loads .env on startup. On SIGHUP, it calls godotenv.Overload() then re-reads Env.
-# So modifying .env.test works ONLY if the process is pointing to it. 
-# But we 'source'd .env.test before starting. Quirm might check .env by default.
-# We didn't tell Quirm WHICH file to load. godotenv loads ".env".
-# Our file is tests/.env.test. Quirm won't find it unless we rename it to .env in CWD.
-# Let's try creating a .env in CWD.
 
 cp tests/.env.test .env
 # Modify .env to strict country
