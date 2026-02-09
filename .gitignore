@@ -46,3 +46,10 @@ quirm
 
 # Pavidi Task Runner. A CodeTease project
 .p/
+# Test binaries and artifacts
+tests/mock_s3_bin
+tests/sign_url_bin
+tests/test_image.jpg
+tests/fallback.jpg
+tests/cache/
+tests/.env.test

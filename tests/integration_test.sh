@@ -33,10 +33,10 @@ if [ ! -f "quirm" ]; then
         
         # Verify helpers compile
         log "Compiling helpers..."
-        go build -o tests/mock_s3 tests/mock_s3/main.go
-        go build -o tests/sign_url tests/sign_url/main.go
+        go build -o tests/mock_s3_bin tests/mock_s3/main.go
+        go build -o tests/sign_url_bin tests/sign_url/main.go
         
-        if [ -f "tests/mock_s3" ] && [ -f "tests/sign_url" ]; then
+        if [ -f "tests/mock_s3_bin" ] && [ -f "tests/sign_url_bin" ]; then
             log "Helpers compiled successfully."
             log "Integration test script structure verified."
             exit 0
@@ -60,8 +60,8 @@ fi
 cp "$TEST_IMG" "$FALLBACK_IMG"
 
 # Compile helpers
-go build -o tests/mock_s3 tests/mock_s3/main.go
-go build -o tests/sign_url tests/sign_url/main.go
+go build -o tests/mock_s3_bin tests/mock_s3/main.go
+go build -o tests/sign_url_bin tests/sign_url/main.go
 
 # Create .env for testing
 cat > tests/.env.test <<EOF
@@ -75,7 +75,7 @@ S3_FORCE_PATH_STYLE=true
 SECRET_KEY=supersecret
 ALLOWED_COUNTRIES=US,VN
 RATE_LIMIT=10
-PRESETS={"thumb": "w=100&h=100&fit=cover"}
+PRESETS='{"thumb": "w=100&h=100&fit=cover"}'
 DEFAULT_IMAGE_PATH=$FALLBACK_IMG
 CACHE_DIR=tests/cache
 WATERMARK_OPACITY=0.5
@@ -84,7 +84,7 @@ EOF
 
 # Start Mock S3
 log "Starting Mock S3 on port 9000..."
-PORT=9000 ./tests/mock_s3 &
+PORT=9000 ./tests/mock_s3_bin &
 MOCK_PID=$!
 
 # Start Quirm
@@ -127,7 +127,7 @@ if [ "$HTTP_CODE" != "403" ]; then error "Expected 403 for invalid signature, go
 
 # Tampered params (w=101 but signature for w=100)
 PARAMS="w=100"
-SIG=$(./tests/sign_url "$SECRET" "/$KEY" "$PARAMS")
+SIG=$(./tests/sign_url_bin "$SECRET" "/$KEY" "$PARAMS")
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/$KEY?w=101&s=$SIG")
 if [ "$HTTP_CODE" != "403" ]; then error "Expected 403 for tampered params, got $HTTP_CODE"; fi
 
@@ -174,7 +174,7 @@ log "Testing Auto-format Negotiation..."
 # Need a fresh key/params to avoid cache? Or just rely on Vary header/internal logic.
 # Quirm's auto-format logic checks Accept header if format is not specified.
 PARAMS="w=50" # Small resize
-SIG=$(./tests/sign_url "$SECRET" "/$KEY" "$PARAMS")
+SIG=$(./tests/sign_url_bin "$SECRET" "/$KEY" "$PARAMS")
 CONTENT_TYPE=$(curl -s -I -H "Accept: image/avif" "$BASE_URL/$KEY?w=50&s=$SIG" | grep -i "Content-Type" | awk '{print $2}' | tr -d '\r')
 # Note: Mock S3 returns JPEG. Quirm should convert to AVIF.
 # If libvips doesn't support AVIF in this env, it might fallback.
@@ -189,7 +189,7 @@ log "Testing Presets..."
 # Preset 'thumb' defined in .env as w=100&h=100&fit=cover
 # When using preset, signature should sign 'preset=thumb'
 PARAMS="preset=thumb"
-SIG=$(./tests/sign_url "$SECRET" "/$KEY" "$PARAMS")
+SIG=$(./tests/sign_url_bin "$SECRET" "/$KEY" "$PARAMS")
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/$KEY?preset=thumb&s=$SIG")
 if [ "$HTTP_CODE" != "200" ]; then error "Expected 200 for preset, got $HTTP_CODE"; fi
 # We can't easily verify dimensions without downloading and inspecting, but 200 OK means it processed.
@@ -198,13 +198,13 @@ log "Preset request passed."
 # 2.3 Blurhash & Palette
 log "Testing Blurhash..."
 PARAMS="blurhash=true"
-SIG=$(./tests/sign_url "$SECRET" "/$KEY" "$PARAMS")
+SIG=$(./tests/sign_url_bin "$SECRET" "/$KEY" "$PARAMS")
 CONTENT=$(curl -s "$BASE_URL/$KEY?blurhash=true&s=$SIG")
 if [ ${#CONTENT} -lt 10 ]; then error "Expected valid blurhash string, got: $CONTENT"; fi
 
 log "Testing Palette..."
 PARAMS="palette=true"
-SIG=$(./tests/sign_url "$SECRET" "/$KEY" "$PARAMS")
+SIG=$(./tests/sign_url_bin "$SECRET" "/$KEY" "$PARAMS")
 CONTENT=$(curl -s "$BASE_URL/$KEY?palette=true&s=$SIG")
 # Simple check if it looks like JSON
 if [[ "$CONTENT" != *"{"* ]]; then error "Expected JSON palette, got: $CONTENT"; fi
@@ -216,7 +216,7 @@ log ">>> Testing Caching & Consistency"
 # 3.1 ETag / Conditional GET
 log "Testing ETag..."
 PARAMS="w=101" # Unique param
-SIG=$(./tests/sign_url "$SECRET" "/$KEY" "$PARAMS")
+SIG=$(./tests/sign_url_bin "$SECRET" "/$KEY" "$PARAMS")
 # First request
 ETAG=$(curl -s -I "$BASE_URL/$KEY?w=101&s=$SIG" | grep -i "ETag" | awk '{print $2}' | tr -d '\r')
 if [ -z "$ETAG" ]; then error "No ETag received"; fi
@@ -246,7 +246,7 @@ log "Testing Fallback Image..."
 MISSING_KEY="test-bucket/missing.jpg"
 # We need to sign this too
 PARAMS="w=200"
-SIG=$(./tests/sign_url "$SECRET" "/$MISSING_KEY" "$PARAMS")
+SIG=$(./tests/sign_url_bin "$SECRET" "/$MISSING_KEY" "$PARAMS")
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/$MISSING_KEY?w=200&s=$SIG")
 # If fallback is working, it should return 200 (serving default image) instead of 404
 if [ "$HTTP_CODE" != "200" ]; then 
@@ -270,7 +270,7 @@ sleep 1
 
 # Retry the Geo-blocking test (US) - Should now FAIL (403)
 PARAMS="w=100"
-SIG=$(./tests/sign_url "$SECRET" "/$KEY" "$PARAMS")
+SIG=$(./tests/sign_url_bin "$SECRET" "/$KEY" "$PARAMS")
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "CF-IPCountry: US" "$BASE_URL/$KEY?w=100&s=$SIG")
 
 if [ "$HTTP_CODE" == "403" ]; then
